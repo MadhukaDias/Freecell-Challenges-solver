@@ -30,6 +30,12 @@ class Array {
     items_[size_++] = c;
   }
 
+  void clear() { size_ = 0; }
+  void resize(int n) {
+    assert(n <= N);
+    size_ = n;
+  }
+
   void erase(int index) {
     assert(index < size_);
     --size_;
