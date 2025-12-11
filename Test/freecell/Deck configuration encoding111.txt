@@ -18,3 +18,17 @@ Column 7: vii
 Column 8: viii
 
 Encoded string will be: its9d9cjd8hqsksii7hkhac2had8sahiii8ckc...
+
+For Freecells and Foundation
+
+[]  [H ] [C ] [D ] [S ]
+
+For freecells there are 4 slots and same for foundation. initally all of them are free.
+
+Empty slot will indicate with two 00s.
+
+[]  [H ] [C ] [D ] [S ]
+Encoded: 0000000000000000
+First 8 0s' for indicate blank freecells. Couple of 0s' indicates one blank slot in freecells. Same for foundation.
+
+Fully encoded string will be: 0000000000000000its9d9cjd8hqsksii7hkhac2had8sahiii8ckc...

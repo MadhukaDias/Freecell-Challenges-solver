@@ -618,18 +618,43 @@ int main(int argc, char** argv) {
       }
   }
 
+  Node layout;
+  layout.set_cards(cards);
+
   // Encode Deck Configuration for checking existing solutions
-  const char* roman_numerals[] = {"i", "ii", "iii", "iv", "v", "vi", "vii", "viii"};
   string deck_encoded_str = "";
-  for (size_t i = 0; i < columns.size(); ++i) {
-      if (i < 8) deck_encoded_str += roman_numerals[i];
-      for (const auto& card : columns[i]) {
-          deck_encoded_str += card.ToCleanString();
+
+  // Reserve (4 slots)
+  const auto& reserve = layout.GetReserve();
+  for (int i = 0; i < 4; ++i) {
+      if (i < reserve.size()) {
+          deck_encoded_str += reserve[i].ToCleanString();
+      } else {
+          deck_encoded_str += "00";
       }
   }
 
-  Node layout;
-  layout.set_cards(cards);
+  // Foundation (4 slots: H, C, D, S)
+  int suit_order[] = {HEART, CLUB, DIAMOND, SPADE};
+  for (int k = 0; k < 4; ++k) {
+      int s = suit_order[k];
+      const auto& f = layout.GetFoundation(s);
+      if (f.empty()) {
+          deck_encoded_str += "00";
+      } else {
+          deck_encoded_str += f.Top(s).ToCleanString();
+      }
+  }
+
+  // Tableau
+  const char* roman_numerals[] = {"i", "ii", "iii", "iv", "v", "vi", "vii", "viii"};
+  for (int i = 0; i < 8; ++i) {
+      deck_encoded_str += roman_numerals[i];
+      const auto& t = layout.GetTableau(i);
+      for (int j = 0; j < t.size(); ++j) {
+          deck_encoded_str += t.card(j).ToCleanString();
+      }
+  }
   
   // Capture initial auto moves
   string initial_auto_moves = CaptureAutoMoves(layout);
