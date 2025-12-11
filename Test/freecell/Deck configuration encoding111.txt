@@ -1,0 +1,20 @@
+Deck configuration encoding,
+
+TS  7H  8C  8D  9S  3H  6C  3D  
+9D  KH  KC  4D  7S  QH  4H  JH  
+9C  AC  4S  JC  3S  6D  TH  JS  
+JD  2H  6S  9H  5D  TD  QD  5C  
+8H  AD  5H  4C  AS  2S  7C  QC  
+QS  8S  TC  6H  5S  2D  KD  7D
+KS  AH  3C  2C
+
+Column 1: i
+Column 2: ii
+Column 3: iii
+Column 4: iv
+Column 5: v
+Column 6: vi
+Column 7: vii
+Column 8: viii
+
+Encoded string will be: its9d9cjd8hqsksii7hkhac2had8sahiii8ckc...

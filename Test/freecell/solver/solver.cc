@@ -619,8 +619,10 @@ int main(int argc, char** argv) {
   }
 
   // Encode Deck Configuration for checking existing solutions
+  const char* roman_numerals[] = {"i", "ii", "iii", "iv", "v", "vi", "vii", "viii"};
   string deck_encoded_str = "";
   for (size_t i = 0; i < columns.size(); ++i) {
+      if (i < 8) deck_encoded_str += roman_numerals[i];
       for (const auto& card : columns[i]) {
           deck_encoded_str += card.ToCleanString();
       }
