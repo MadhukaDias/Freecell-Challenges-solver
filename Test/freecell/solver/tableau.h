@@ -127,7 +127,7 @@ class Tableau {
   }
   bool operator!=(const Tableau& t) const { return !(*this == t); }
 
-  static Card init_tableau_[8][7];
+  static Card init_tableau_[8][52];
 
  private:
   void PushTopToStack() { stack_ = (stack_ << 1) | top_.IsMajor(); }

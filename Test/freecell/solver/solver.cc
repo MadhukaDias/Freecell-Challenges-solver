@@ -571,55 +571,53 @@ int main(int argc, char** argv) {
   options.auto_play = true;
   Node::Initialize();
 
-  // Sample Board (Deal #2)
-  // Format: Each line represents a COLUMN in the tableau.
-  // Line 1 = Column 1, Line 2 = Column 2, etc.
-  string deal_str= R"(TS 9D 9C JD 8H QS KS
-                      7H KH AC 2H AD 8S AH 
-                      8C KC 4S 6S 5H TC 3C 
-                      8D 4D JC 9H 4C 6H 2C 
-                      9S 7S 3S 5D AS 5S 
-                      3H QH 6D TD 2S 2D 
-                      6C 4H TH QD 7C KD 
-                      3D JH JS 5C QC 7D)";
+  // Encoded Deck Configuration
+  string encoded_deck = "0000000000000000its9d9cjd8hqsksii7hkh1c2h1d8s1hiii8ckc4s6s5htc3civ8d4djc9h4c6h2cv9s7s3s5d1s5svi3hqh6dtd2s2dvii6c4hthqd7ckdviii3djhjs5cqc7d";
 
-  vector<vector<Card>> columns;
-  stringstream ss(deal_str);
-  string line;
-  while (getline(ss, line)) {
-      // Skip empty lines or whitespace-only lines if necessary
-      if (line.empty() || line.find_first_not_of(" \t\r\n") == string::npos) continue;
-      
-      vector<Card> col_cards;
-      stringstream ls(line);
-      string card_str;
-      while (ls >> card_str) {
-          col_cards.push_back(ParseCard(card_str));
-      }
-      if (!col_cards.empty()) {
-          columns.push_back(col_cards);
+  // Parse Reserve (first 8 chars -> 4 slots)
+  vector<Card> reserve_cards;
+  for(int i=0; i<4; ++i) {
+      string s = encoded_deck.substr(i*2, 2);
+      if(s != "00") reserve_cards.push_back(ParseCleanCard(s));
+  }
+
+  // Parse Foundation (next 8 chars -> 4 slots: H, C, D, S)
+  vector<Card> foundation_tops(4, Card(-1)); // Init with invalid
+  int suit_order_parse[] = {HEART, CLUB, DIAMOND, SPADE};
+  for(int i=0; i<4; ++i) {
+      string s = encoded_deck.substr(8 + i*2, 2);
+      if(s != "00") {
+          Card c = ParseCleanCard(s);
+          foundation_tops[suit_order_parse[i]] = c;
       }
   }
 
-  // Flatten columns into row-major vector for Node::set_cards
-  // Node::set_cards expects cards in order: Row 0 (Cols 1-8), Row 1 (Cols 1-8), etc.
-  vector<Card> cards;
-  int max_rows = 0;
-  for (const auto& col : columns) max_rows = max(max_rows, (int)col.size());
+  // Parse Tableau
+  vector<vector<Card>> tableaus(8);
+  string tableau_part = encoded_deck.substr(16);
+  
+  const char* markers[] = {"i", "ii", "iii", "iv", "v", "vi", "vii", "viii"};
+  size_t positions[9];
+  size_t current_pos = 0;
+  for(int i=0; i<8; ++i) {
+      size_t pos = tableau_part.find(markers[i], current_pos);
+      positions[i] = pos;
+      current_pos = pos + strlen(markers[i]);
+  }
+  positions[8] = tableau_part.length();
 
-  for (int r = 0; r < max_rows; ++r) {
-      for (int c = 0; c < 8; ++c) {
-          // If the column has a card at this row, add it
-          // Note: We assume standard Freecell layout where columns are filled from left to right
-          // for the last partial row.
-          if (c < columns.size() && r < columns[c].size()) {
-              cards.push_back(columns[c][r]);
-          }
+  for(int i=0; i<8; ++i) {
+      size_t start = positions[i] + strlen(markers[i]);
+      size_t end = positions[i+1];
+      string cards_str = tableau_part.substr(start, end - start);
+      for(size_t k=0; k<cards_str.length(); k+=2) {
+          tableaus[i].push_back(ParseCleanCard(cards_str.substr(k, 2)));
       }
   }
 
   Node layout;
-  layout.set_cards(cards);
+  layout.LoadState(reserve_cards, foundation_tops, tableaus);
+  Node initial_layout = layout;
 
   // Encode Deck Configuration for checking existing solutions
   string deck_encoded_str = "";
@@ -686,8 +684,7 @@ int main(int argc, char** argv) {
                   cout << "Encoded deck configuration\n" << file_deck_config << "\n\n";
 
                   cout << "Readable deck configuration\n";
-                  Node display_layout;
-                  display_layout.set_cards(cards);
+                  Node display_layout = initial_layout;
                   display_layout.Show();
                   cout << "\n";
 
@@ -701,10 +698,9 @@ int main(int argc, char** argv) {
                   cout << "Encoded solution\n" << full_solution << "\n\n";
                   
                   cout << "Readable solution\n";
-                  Node layout;
-                  layout.set_cards(cards);
+                  Node layout_replay = initial_layout;
                   
-                  DecodeAndShow(full_solution, layout);
+                  DecodeAndShow(full_solution, layout_replay);
                   return 0;
               }
           }
@@ -856,8 +852,7 @@ int main(int argc, char** argv) {
       cout << "\nEncoded deck configuration\n" << deck_encoded_str << "\n\n";
 
       cout << "Readable deck configuration\n";
-      Node display_layout;
-      display_layout.set_cards(cards);
+      Node display_layout = initial_layout;
       display_layout.Show();
       cout << "\n";
 
@@ -886,8 +881,7 @@ int main(int argc, char** argv) {
 
       // Decode and show
       cout << "Readable solution\n";
-      Node display_layout_final;
-      display_layout_final.set_cards(cards);
+      Node display_layout_final = initial_layout;
       DecodeAndShow(encoded_solution_string, display_layout_final);
 
       printf("-------------------------\n");

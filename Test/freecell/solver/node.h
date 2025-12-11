@@ -70,6 +70,54 @@ class Node {
     moves_estimated_ = kTotalCards;
   }
 
+  void LoadState(const vector<Card>& reserve, const vector<Card>& foundation_tops, const vector<vector<Card>>& tableaus) {
+      // Set Reserve
+      reserve_.clear();
+      for(const auto& c : reserve) reserve_.push_back(c);
+
+      // Set Foundation
+      for(int i=0; i<4; ++i) {
+          foundation_[i] = Foundation(); // Reset
+          // foundation_tops[i] is the top card for suit i (or invalid/empty)
+          // We assume foundation_tops is size 4, indexed by suit (0..3)
+          // But wait, the encoded string has 4 slots, but they might not be in suit order?
+          // The encoded string has 4 slots for foundation.
+          // The user said: "For freecells there are 4 slots and same for foundation... [H ] [C ] [D ] [S ]"
+          // So the order is H, C, D, S.
+          // My `LoadState` should probably take a map or array indexed by suit.
+          // Let's assume the caller handles the mapping and passes a vector where index = suit.
+          // Or I can pass the raw 4 cards from the string and let LoadState figure it out?
+          // Better: caller passes `vector<Card> foundation_tops` of size 4, where index is Suit.
+      }
+      
+      for(int s=0; s<4; ++s) {
+          Card top = foundation_tops[s];
+          if (top.card() != -1) { // Assuming -1 is invalid/empty
+             int target_rank = top.rank();
+             for(int r=0; r<=target_rank; ++r) {
+                 foundation_[s].Push(Card(s, r));
+             }
+          }
+      }
+
+      // Set Tableau
+      for(int i=0; i<8; ++i) {
+          const auto& col_cards = tableaus[i];
+          for(int j=0; j<col_cards.size(); ++j) {
+              Tableau::init_tableau_[i][j] = col_cards[j];
+          }
+          tableau_[i].set_cards(i, col_cards.size());
+      }
+      
+      // Recalculate metrics
+      cards_unsorted_ = 0;
+      for (int i = 0; i < 8; ++i) {
+        cards_unsorted_ += tableau_[i].unsorted_size();
+      }
+      moves_performed_ = 0;
+      moves_estimated_ = kTotalCards; // Approximation
+  }
+
   Node(const Node& node) {
     int copy_size = reinterpret_cast<char*>(&moves_) + node.moves_.copy_size() -
                     reinterpret_cast<char*>(this);
