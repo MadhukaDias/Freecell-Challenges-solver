@@ -1,0 +1,871 @@
+#include <algorithm>
+#include <atomic>
+#include <memory>
+#include <mutex>
+#include <thread>
+#include <iostream>
+#include <sstream>
+#include <fstream>
+using namespace std;
+
+#include "bucket.h"
+#include "deals.h"
+#include "hash_table.h"
+#include "node.h"
+#include "options.h"
+
+class Beam {
+ public:
+  Beam(int seed, int beam_size, int beam_id, int num_beams);
+  string Solve(const Node& layout);
+  void SubmitWork(List<Node>* new_work);
+
+ private:
+  Node* CreateNewLevel(const Bucket& cur_level, Bucket* new_level);
+  Node* BeamSearch(const Node& layout);
+  string EncodeSolution(const Node& start, const Node& finish) const;
+
+  List<Node> GetWork();
+  Node* ProcessNewNodes(List<Node> new_nodes, Bucket* new_level);
+  int TargetBeam(unsigned hash) const {
+    // Shift bits so hash table can be better used.
+    return (hash + (hash >> 24)) % num_beams_;
+  }
+
+  void EnterBarrier();
+  bool BarrierDone();
+  void Barrier();
+  bool AllBeamsEmpty(int level) const;
+
+  const int seed_;
+  const int beam_size_;
+  const int beam_id_;
+  const int num_beams_;
+
+  int upperbound_ = kMaxMoves + 1;
+  vector<Bucket> levels_;
+  std::unique_ptr<HashTable> hash_table_;
+  Node shared_solution_;  // to be shared with other beams
+  mutable Pool pool_;
+
+  int sequence_number_;
+  std::atomic<int> barrier_;
+
+  List<Node> work_;
+  std::mutex mu_;
+};
+
+vector<std::unique_ptr<Beam>> beams;
+
+Beam::Beam(int seed, int beam_size, int beam_id, int num_beams)
+    : seed_(seed),
+      beam_size_(beam_size),
+      beam_id_(beam_id),
+      num_beams_(num_beams),
+      sequence_number_(0),
+      barrier_(0) {
+  const int kNumBins = (kMaxMoves - kMinMoves) * 2;
+  for (int i = 0; i < kMaxMoves; ++i) levels_.emplace_back(Bucket(kNumBins));
+  hash_table_.reset(new HashTable(beam_size_ * 2));
+}
+
+void Beam::SubmitWork(List<Node>* new_work) {
+  if (new_work->empty()) return;
+  mu_.lock();
+  work_.Append(new_work);
+  mu_.unlock();
+}
+
+List<Node> Beam::GetWork() {
+  List<Node> new_work;
+  mu_.lock();
+  new_work.Append(&work_);
+  mu_.unlock();
+  return new_work;
+}
+
+void Beam::EnterBarrier() {
+  sequence_number_ = !sequence_number_;
+  if (beam_id_ != 0) barrier_ = sequence_number_;
+}
+
+bool Beam::BarrierDone() {
+  if (beam_id_ == 0) {
+    for (int i = 1; i < num_beams_; ++i)
+      if (beams[i]->barrier_ != sequence_number_) return false;
+    beams[0]->barrier_ = sequence_number_;
+    return true;
+  } else
+    return (beams[0]->barrier_ == sequence_number_);
+}
+
+void Beam::Barrier() {
+  EnterBarrier();
+  while (!BarrierDone()) sched_yield();
+}
+
+bool Beam::AllBeamsEmpty(int level) const {
+  for (int i = 0; i < num_beams_; ++i)
+    if (beams[i]->levels_[level].size() > 0) return false;
+  return true;
+}
+
+Node* Beam::CreateNewLevel(const Bucket& cur_level, Bucket* new_level) {
+  vector<List<Node>> partitions(num_beams_);
+  ScopedNode solution(&pool_);
+
+  auto process_new_solution = [&](Node* new_solution) {
+    if (!new_solution) return;
+    solution.reset(new_solution);
+    if (num_beams_ == 1) return;
+
+    // If solution is produced by this beam, send it to other beams to lower
+    // their upperbounds.
+    if (TargetBeam(solution->hash()) == beam_id_) {
+      for (int i = 0; i < num_beams_; ++i) {
+        if (i == beam_id_) continue;
+        partitions[i].Append(pool_.New(*solution));
+      }
+    }
+  };
+
+  int expand_count = 0;
+  cur_level.Iterate([&](Node* node) {
+    if (node->moves_performed() >= upperbound_ - 1) return;
+    auto new_nodes = node->Expand(&pool_);
+    if (new_nodes.empty()) return;
+
+    if (num_beams_ == 1) {
+      for (auto* node : new_nodes) node->ComputeHash();
+      process_new_solution(ProcessNewNodes(new_nodes, new_level));
+    } else {
+      for (auto* node : new_nodes) {
+        node->ComputeHash();
+        partitions[TargetBeam(node->hash())].Append(node);
+      }
+      if (++expand_count < 100) return;
+      expand_count = 0;
+      for (int i = 0; i < num_beams_; ++i) beams[i]->SubmitWork(&partitions[i]);
+      process_new_solution(ProcessNewNodes(GetWork(), new_level));
+    }
+  });
+  if (num_beams_ > 1) {
+    for (int i = 0; i < num_beams_; ++i) beams[i]->SubmitWork(&partitions[i]);
+    EnterBarrier();
+    while (!BarrierDone())
+      process_new_solution(ProcessNewNodes(GetWork(), new_level));
+    for (int round = 0; round < 2; ++round) {
+      for (int i = 0; i < num_beams_; ++i) beams[i]->SubmitWork(&partitions[i]);
+      Barrier();
+      process_new_solution(ProcessNewNodes(GetWork(), new_level));
+    }
+    assert(work_.empty());
+    for (int i = 0; i < num_beams_; ++i) assert(partitions[i].empty());
+    Barrier();
+  }
+
+  // hash_table_->Show(beam_id_);
+  // cur_level.Iterate([&](Node* node) { hash_table_->Remove(node); });
+  return solution.release();
+}
+
+Node* Beam::ProcessNewNodes(List<Node> new_nodes, Bucket* new_level) {
+  ScopedNode solution(&pool_);
+  for (auto* new_node : new_nodes) {
+    if (new_node->min_total_moves() >= upperbound_ ||
+        new_node->bin() < new_level->lowerbound()) {
+      pool_.Delete(new_node);
+      continue;
+    }
+    if (new_node->cards_unsorted() == 0 &&
+        new_node->min_total_moves() < upperbound_) {
+      solution.reset(new_node);
+      upperbound_ = solution->min_total_moves();
+      continue;
+    }
+
+    if ((new_level->size() == beam_size_ &&
+         new_node->bin() > new_level->max()) ||
+        hash_table_->Find(new_node)) {
+      pool_.Delete(new_node);
+    } else if (new_level->size() < beam_size_) {
+      new_level->Add(new_node, new_node->bin());
+      hash_table_->Add(new_node);
+    } else {
+      auto max_node = new_level->RemoveMax();
+      hash_table_->Remove(max_node);
+      pool_.Delete(max_node);
+      new_level->Add(new_node, new_node->bin());
+      hash_table_->Add(new_node);
+    }
+  }
+  return solution.release();
+}
+
+Node* Beam::BeamSearch(const Node& layout) {
+  auto root = pool_.New(layout);
+  root->ComputeHash();
+  levels_[0].Add(root, root->bin());
+  hash_table_->Add(root);
+
+  ScopedNode solution(&pool_);
+  int max_level_size = 0;
+  for (int i = 0; i < kMaxMoves; ++i) {
+    if (num_beams_ == 1) {
+      if (levels_[i].empty()) break;
+    } else {
+      Barrier();
+      if (AllBeamsEmpty(i)) break;
+      Barrier();
+    }
+    if (beam_id_ == 0 && !options.quiet) {
+      char progress[30];
+      sprintf(progress, "%s%4d %8d", string('\b', 13).c_str(), i,
+              levels_[i].size());
+      printf("%s", progress);
+      fflush(stdout);
+      max_level_size = max(max_level_size, levels_[i].size());
+    }
+    auto new_solution = CreateNewLevel(levels_[i], &levels_[i + 1]);
+    if (new_solution) solution.reset(new_solution);
+    constexpr int kPreservedLevels = 1;
+    if (i >= kPreservedLevels) {
+      bool first = true;
+      levels_[i - kPreservedLevels].Iterate([&](Node* node) {
+#if 0
+        if (i == 75 && first) {
+          first = false;
+          node->Show();
+          auto code = EncodeSolution(layout, *node);
+          puts(code.c_str());
+        }
+#endif
+        hash_table_->Remove(node);
+        pool_.Delete(node);
+      });
+      levels_[i - kPreservedLevels].Clear();
+    }
+  }
+  for (auto& level : levels_) {
+    level.Iterate([&](Node* node) {
+      hash_table_->Remove(node);
+      pool_.Delete(node);
+    });
+    level.Clear();
+  }
+  if (beam_id_ == 0 && !options.quiet) {
+    printf("%s%8d\n", string('\b', 8).c_str(), max_level_size);
+  }
+  return solution.release();
+}
+
+string Beam::EncodeSolution(const Node& start, const Node& finish) const {
+  string code;
+  ScopedNode node(&pool_, pool_.New(start));
+  Node::CompressedMoves::Reader reader(finish.moves());
+  for (int i = 0; i < finish.moves_performed(); ++i) {
+    if (node->cards_unsorted() == 0) {
+      code += node->CompleteSolution();
+      break;
+    }
+
+    auto new_nodes = node->Expand(&pool_).ToVector();
+    int move_index = reader.Read(new_nodes.size());
+    assert(move_index < new_nodes.size());
+    auto picked_node = new_nodes[move_index];
+    for (auto* new_node : new_nodes)
+      if (new_node != picked_node) pool_.Delete(new_node);
+    node.reset(picked_node);
+    code += node->last_move().Encode();
+  }
+  return code;
+}
+
+string Beam::Solve(const Node& layout) {
+  upperbound_ = kMaxMoves;
+  if (beam_id_ == 0 && !options.quiet) printf("upperbound %d\n", upperbound_);
+  
+  ScopedNode solution(&pool_, BeamSearch(layout));
+  string coded_solution;
+
+  if (solution) {
+      if (num_beams_ > 1) {
+        // Use the same one solution in case different ones are found.
+        if (beam_id_ == 0) new (&shared_solution_) Node(*solution);
+        Barrier();
+        if (beam_id_ != 0) solution.reset(new Node(beams[0]->shared_solution_));
+        Barrier();
+      }
+
+      solution->CompleteSolution();
+      if (beam_id_ == 0 && !options.quiet) solution->ShowSummary();
+      coded_solution = EncodeSolution(layout, *solution);
+  }
+  
+  // if (beam_id_ == 0) printf("%d:%s\n", seed_, coded_solution.c_str());
+  return coded_solution;
+}
+
+
+Card ParseCard(string s) {
+    int rank = -1;
+    int suit = -1;
+    char suitChar = s.back();
+    string rankStr = s.substr(0, s.length() - 1);
+
+    if (rankStr == "A") rank = ACE;
+    else if (rankStr == "2") rank = R2;
+    else if (rankStr == "3") rank = R3;
+    else if (rankStr == "4") rank = R4;
+    else if (rankStr == "5") rank = R5;
+    else if (rankStr == "6") rank = R6;
+    else if (rankStr == "7") rank = R7;
+    else if (rankStr == "8") rank = R8;
+    else if (rankStr == "9") rank = R9;
+    else if (rankStr == "10" || rankStr == "T") rank = R10;
+    else if (rankStr == "J") rank = RJ;
+    else if (rankStr == "Q") rank = RQ;
+    else if (rankStr == "K") rank = KING;
+
+    if (suitChar == 'S') suit = SPADE;
+    else if (suitChar == 'H') suit = HEART;
+    else if (suitChar == 'D') suit = DIAMOND;
+    else if (suitChar == 'C') suit = CLUB;
+
+    return Card(suit, rank);
+}
+
+Card ParseCleanCard(string s) {
+    // s is like "8s", "tc", "1d"
+    if (s.length() < 2) return Card(0, 0); // Error
+    
+    char rankChar = s[0];
+    char suitChar = s[1];
+    
+    int rank = -1;
+    int suit = -1;
+
+    if (rankChar == '1') rank = ACE;
+    else if (rankChar == '2') rank = R2;
+    else if (rankChar == '3') rank = R3;
+    else if (rankChar == '4') rank = R4;
+    else if (rankChar == '5') rank = R5;
+    else if (rankChar == '6') rank = R6;
+    else if (rankChar == '7') rank = R7;
+    else if (rankChar == '8') rank = R8;
+    else if (rankChar == '9') rank = R9;
+    else if (rankChar == 't') rank = R10;
+    else if (rankChar == 'j') rank = RJ;
+    else if (rankChar == 'q') rank = RQ;
+    else if (rankChar == 'k') rank = KING;
+
+    if (suitChar == 's') suit = SPADE;
+    else if (suitChar == 'h') suit = HEART;
+    else if (suitChar == 'd') suit = DIAMOND;
+    else if (suitChar == 'c') suit = CLUB;
+
+    return Card(suit, rank);
+}
+
+// Helper to strip ANSI codes for file output
+string StripAnsi(const string& str) {
+    string res = "";
+    bool in_ansi = false;
+    for (char c : str) {
+        if (c == '\033') {
+            in_ansi = true;
+        } else if (in_ansi && c == 'm') {
+            in_ansi = false;
+        } else if (!in_ansi) {
+            res += c;
+        }
+    }
+    return res;
+}
+
+void DecodeAndShow(string solution_str, Node layout) {
+    // printf("readable solution\n");
+    int step = 1;
+    int pos = 0;
+    while (pos < solution_str.length()) {
+        // 1. Parse Card
+        string card_code = solution_str.substr(pos, 2);
+        pos += 2;
+        
+        // 2. Parse Stack Count
+        int stack_count = 1;
+        if (pos < solution_str.length() && solution_str[pos] == '#') {
+            pos++; // skip '#'
+            size_t next_underscore = solution_str.find('_', pos);
+            string count_str = solution_str.substr(pos, next_underscore - pos);
+            stack_count = stoi(count_str);
+            pos = next_underscore;
+        }
+
+        // 3. Skip '_'
+        if (pos < solution_str.length() && solution_str[pos] == '_') pos++;
+
+        // 4. Parse Source
+        string source_code;
+        if (pos < solution_str.length()) {
+            source_code = solution_str[pos];
+            pos++;
+        }
+
+        // 5. Skip '_'
+        if (pos < solution_str.length() && solution_str[pos] == '_') pos++;
+
+        // 6. Parse Dest
+        string dest_code;
+        if (pos < solution_str.length()) {
+            if (solution_str[pos] == '~') {
+                // ~n~
+                size_t end_tilde = solution_str.find('~', pos + 1);
+                dest_code = solution_str.substr(pos, end_tilde - pos + 1);
+                pos = end_tilde + 1;
+            } else {
+                // F or R
+                dest_code = solution_str[pos];
+                pos++;
+            }
+        }
+
+        // Prepare readable strings
+        string card_name = "";
+        string clean_card_code = card_code;
+        // Uppercase for display
+        for(char &c : card_code) c = toupper(c);
+        
+        // Colorize card_code
+        string colored_card_code = card_code;
+        char suit = card_code.back();
+        if (suit == 'H' || suit == 'D') {
+            colored_card_code = "\033[31m" + card_code + "\033[0m"; // Red
+        } else if (suit == 'S' || suit == 'C') {
+            colored_card_code = "\033[32m" + card_code + "\033[0m"; // Green
+        }
+
+        if (stack_count > 1) {
+            card_name = "stack of " + to_string(stack_count) + " cards (" + colored_card_code + ")";
+        } else {
+            card_name = colored_card_code;
+        }
+
+        string source_name = "";
+        int src_idx = -1;
+        bool src_is_reserve = false;
+        if (source_code == "R") {
+            source_name = "Reserve";
+            src_is_reserve = true;
+        } else {
+            src_idx = stoi(source_code);
+            source_name = "Tableau " + to_string(src_idx + 1);
+        }
+
+        string dest_name = "";
+        string on_card = "";
+        int dest_idx = -1;
+        bool dest_is_foundation = false;
+        bool dest_is_reserve = false;
+        
+        if (dest_code == "F") {
+            dest_name = "Foundation";
+            dest_is_foundation = true;
+        } else if (dest_code == "R") {
+            dest_name = "Reserve";
+            dest_is_reserve = true;
+        } else {
+            // ~n~
+            string n_str = dest_code.substr(1, dest_code.length() - 2);
+            dest_idx = stoi(n_str);
+            dest_name = "Tableau " + to_string(dest_idx + 1);
+        }
+
+        // Determine "on card"
+        if (dest_idx != -1) {
+            if (layout.GetTableau(dest_idx).empty()) {
+                on_card = " (empty column)";
+            } else {
+                on_card = " (on " + string(layout.GetTableau(dest_idx).Top().ToString()) + ")";
+            }
+        }
+
+        // Check for Auto Move
+        bool is_auto = false;
+        Card c_obj = ParseCleanCard(clean_card_code);
+        if (dest_is_foundation && layout.CanAutoPlay(c_obj)) {
+            is_auto = true;
+        }
+
+        // Apply move to layout
+        if (src_is_reserve) {
+            // Find card index in reserve
+            Card c = ParseCleanCard(clean_card_code);
+            int r_idx = -1;
+            for(int i=0; i<layout.GetReserve().size(); ++i) {
+                if (layout.GetReserve()[i] == c) {
+                    r_idx = i;
+                    break;
+                }
+            }
+            
+            if (r_idx != -1) {
+                if (dest_is_foundation) layout.ApplyReserveToFoundation(r_idx);
+                else if (dest_idx != -1) layout.ApplyReserveToTableau(r_idx, dest_idx);
+            }
+        } else {
+            // Source is Tableau
+            if (dest_is_foundation) layout.ApplyTableauToFoundation(src_idx);
+            else if (dest_is_reserve) layout.ApplyTableauToReserve(src_idx);
+            else if (dest_idx != -1) layout.ApplyTableauToTableau(src_idx, dest_idx);
+        }
+
+        string step_str = "Step " + to_string(step++) + ": Move " + card_name + " from " + source_name + " to " + dest_name + on_card;
+        if (is_auto) {
+            cout << "\033[34m" << step_str << "\033[0m" << endl;
+        } else {
+            cout << step_str << endl;
+        }
+    }
+}
+
+string CaptureAutoMoves(Node& node) {
+    string encoded_moves = "";
+    bool moved = true;
+    while (moved) {
+        moved = false;
+        // Check Reserve
+        for (int i = 0; i < node.GetReserve().size(); ++i) {
+            if (node.CanAutoPlay(node.GetReserve()[i])) {
+                string clean_card = node.GetReserve()[i].ToCleanString();
+                string encoded = clean_card + "_R_F";
+                encoded_moves += encoded;
+                node.ApplyReserveToFoundation(i);
+                moved = true;
+                break; 
+            }
+        }
+        if (moved) continue;
+
+        // Check Tableau
+        for (int i = 0; i < 8; ++i) {
+            if (!node.GetTableau(i).empty() && node.CanAutoPlay(node.GetTableau(i).Top())) {
+                string clean_card = node.GetTableau(i).Top().ToCleanString();
+                string encoded = clean_card + "_" + to_string(i) + "_F";
+                encoded_moves += encoded;
+                node.ApplyTableauToFoundation(i);
+                moved = true;
+                break;
+            }
+        }
+    }
+    return encoded_moves;
+}
+
+int main(int argc, char** argv) {
+  // Hardcoded options for the sample
+  options.seed = 2;
+  options.beam_size = 2048;
+  options.num_beams = 1;
+  options.quiet = false;
+  options.auto_play = true;
+  Node::Initialize();
+
+  // Sample Board (Deal #2)
+  // Format: Each line represents a COLUMN in the tableau.
+  // Line 1 = Column 1, Line 2 = Column 2, etc.
+  string deal_str= R"(TS 9D 9C JD 8H QS KS
+                      7H KH AC 2H AD 8S AH 
+                      8C KC 4S 6S 5H TC 3C 
+                      8D 4D JC 9H 4C 6H 2C 
+                      9S 7S 3S 5D AS 5S 
+                      3H QH 6D TD 2S 2D 
+                      6C 4H TH QD 7C KD 
+                      3D JH JS 5C QC 7D)";
+
+  vector<vector<Card>> columns;
+  stringstream ss(deal_str);
+  string line;
+  while (getline(ss, line)) {
+      // Skip empty lines or whitespace-only lines if necessary
+      if (line.empty() || line.find_first_not_of(" \t\r\n") == string::npos) continue;
+      
+      vector<Card> col_cards;
+      stringstream ls(line);
+      string card_str;
+      while (ls >> card_str) {
+          col_cards.push_back(ParseCard(card_str));
+      }
+      if (!col_cards.empty()) {
+          columns.push_back(col_cards);
+      }
+  }
+
+  // Flatten columns into row-major vector for Node::set_cards
+  // Node::set_cards expects cards in order: Row 0 (Cols 1-8), Row 1 (Cols 1-8), etc.
+  vector<Card> cards;
+  int max_rows = 0;
+  for (const auto& col : columns) max_rows = max(max_rows, (int)col.size());
+
+  for (int r = 0; r < max_rows; ++r) {
+      for (int c = 0; c < 8; ++c) {
+          // If the column has a card at this row, add it
+          // Note: We assume standard Freecell layout where columns are filled from left to right
+          // for the last partial row.
+          if (c < columns.size() && r < columns[c].size()) {
+              cards.push_back(columns[c][r]);
+          }
+      }
+  }
+
+  // Encode Deck Configuration for checking existing solutions
+  string deck_encoded_str = "";
+  for (size_t i = 0; i < columns.size(); ++i) {
+      for (const auto& card : columns[i]) {
+          deck_encoded_str += card.ToCleanString();
+      }
+  }
+
+  Node layout;
+  layout.set_cards(cards);
+  
+  // Capture initial auto moves
+  string initial_auto_moves = CaptureAutoMoves(layout);
+  // layout is now in the state after initial auto moves
+
+  // Check if solution already exists
+  int check_n = 0;
+  while (true) {
+      string check_filename = "../Solutions/sol_" + to_string(check_n);
+      ifstream f(check_filename);
+      if (!f.good()) break;
+
+      string file_deck_config;
+      if (getline(f, file_deck_config)) {
+          // Remove any potential carriage return
+          if (!file_deck_config.empty() && file_deck_config.back() == '\r') {
+              file_deck_config.pop_back();
+          }
+          
+          if (file_deck_config == deck_encoded_str) {
+              string file_solution;
+              if (getline(f, file_solution)) {
+                  if (!file_solution.empty() && file_solution.back() == '\r') {
+                      file_solution.pop_back();
+                  }
+                  
+                  cout << "Found existing solution in " << check_filename << "\n\n";
+                  
+                  cout << "Encoded deck configuration\n" << file_deck_config << "\n\n";
+
+                  cout << "Readable deck configuration\n";
+                  Node display_layout;
+                  display_layout.set_cards(cards);
+                  display_layout.Show();
+                  cout << "\n";
+
+                  // Check if file_solution is missing initial auto moves
+                  string full_solution = file_solution;
+                  if (file_solution.find(initial_auto_moves) != 0) {
+                      // Prepend missing auto moves
+                      full_solution = initial_auto_moves + file_solution;
+                  }
+
+                  cout << "Encoded solution\n" << full_solution << "\n\n";
+                  
+                  cout << "Readable solution\n";
+                  Node layout;
+                  layout.set_cards(cards);
+                  
+                  DecodeAndShow(full_solution, layout);
+                  return 0;
+              }
+          }
+      }
+      check_n++;
+  }
+
+  if (!options.quiet) layout.Show();
+
+  vector<Move> moves;
+
+  for (int i = 0; i < options.num_beams; ++i)
+    beams.emplace_back(
+        new Beam(options.seed, options.beam_size, i, options.num_beams));
+
+  string solution_str;
+  if (options.num_beams == 1) {
+      solution_str = beams[0]->Solve(layout);
+  } else {
+      vector<std::unique_ptr<std::thread>> threads;
+      for (int i = 0; i < options.num_beams; ++i)
+        threads.emplace_back(new std::thread(
+            std::bind(&Beam::Solve, beams[i].get(), layout)));
+      for (int i = 0; i < options.num_beams; ++i) threads[i]->join();
+      // Note: In multi-threaded mode, we'd need to capture the solution from the winning thread.
+      // For this sample, we assume single thread.
+  }
+
+  if (!solution_str.empty()) {
+      
+      // printf("\n\n--- Readable Solution ---\n"); // Moved to end
+      auto solution_moves = DecodeSolution(solution_str);
+      
+      Node current_layout = layout;
+      int step = 1;
+      string encoded_solution_string = initial_auto_moves;
+
+      // Helper lambda to print a move
+      // We will store the readable output in a buffer and print it AFTER the encoded string
+      // stringstream readable_output_buffer; // Removed
+      
+      auto PrintMove = [&](string card_name, string source, string dest, string on_card, bool is_auto = false, string encoded_step = "") {
+          // stringstream ss;
+          // string clean_card = StripAnsi(card_name);
+          // string clean_on_card = StripAnsi(on_card);
+          
+          if (!encoded_step.empty()) {
+              // Removed pipe separator as per request
+              encoded_solution_string += encoded_step;
+          }
+
+          // No printing here
+      };
+
+      // Initial AutoPlay - Already done and captured in initial_auto_moves
+      // ProcessAutoMoves(current_layout); 
+
+      for (const auto& move : solution_moves) {
+          // Capture state before move
+          string card_name = "Unknown";
+          string source = "Unknown";
+          string dest = "Unknown";
+          string on_card = "";
+          string encoded_step = "";
+          int dest_size_before = 0;
+
+          if (move.type == kTableauToReserve) {
+              Card c = current_layout.GetTableau(move.from).Top();
+              card_name = c.ToString();
+              source = "Tableau " + to_string(move.from + 1);
+              dest = "Reserve";
+              // Encode: card_col_R
+              encoded_step = c.ToCleanString() + "_" + to_string(move.from) + "_R";
+
+          } else if (move.type == kTableauToTableau) {
+              Card c = current_layout.GetTableau(move.from).Top();
+              card_name = c.ToString();
+              source = "Tableau " + to_string(move.from + 1);
+              dest = "Tableau " + to_string(move.to + 1);
+              dest_size_before = current_layout.GetTableau(move.to).size();
+              if (!current_layout.GetTableau(move.to).empty()) {
+                  on_card = string(" (on ") + current_layout.GetTableau(move.to).Top().ToString() + ")";
+              } else {
+                  on_card = " (empty column)";
+              }
+              // Encode: card_col_~col~
+              encoded_step = c.ToCleanString() + "_" + to_string(move.from) + "_~" + to_string(move.to) + "~";
+
+          } else if (move.type == kTableauToFoundation) {
+              Card c = current_layout.GetTableau(move.from).Top();
+              card_name = c.ToString();
+              source = "Tableau " + to_string(move.from + 1);
+              dest = "Foundation";
+              // Encode: card_col_F
+              encoded_step = c.ToCleanString() + "_" + to_string(move.from) + "_F";
+
+          } else if (move.type == kReserveToTableau) {
+              Card c = current_layout.GetReserve()[move.from];
+              card_name = c.ToString();
+              source = "Reserve";
+              dest = "Tableau " + to_string(move.to + 1);
+              if (!current_layout.GetTableau(move.to).empty()) {
+                  on_card = string(" (on ") + current_layout.GetTableau(move.to).Top().ToString() + ")";
+              } else {
+                  on_card = " (empty column)";
+              }
+              // Encode: card_R_~col~
+              encoded_step = c.ToCleanString() + "_R_~" + to_string(move.to) + "~";
+
+          } else if (move.type == kReserveToFoundation) {
+              Card c = current_layout.GetReserve()[move.from];
+              card_name = c.ToString();
+              source = "Reserve";
+              dest = "Foundation";
+              // Encode: card_R_F
+              encoded_step = c.ToCleanString() + "_R_F";
+          }
+
+          // Apply the move manually (without AutoPlay)
+          if (move.type == kTableauToReserve) current_layout.ApplyTableauToReserve(move.from);
+          else if (move.type == kTableauToTableau) current_layout.ApplyTableauToTableau(move.from, move.to);
+          else if (move.type == kTableauToFoundation) current_layout.ApplyTableauToFoundation(move.from);
+          else if (move.type == kReserveToTableau) current_layout.ApplyReserveToTableau(move.from, move.to);
+          else if (move.type == kReserveToFoundation) current_layout.ApplyReserveToFoundation(move.from);
+
+          // Check for stack move
+          if (move.type == kTableauToTableau) {
+              int dest_size_after = current_layout.GetTableau(move.to).size();
+              int moved_count = dest_size_after - dest_size_before;
+              if (moved_count > 1) {
+                  card_name = "stack of " + to_string(moved_count) + " cards (" + card_name + ")";
+                  // Update encoded step for stack move: card#count_col_~col~
+                  // We need the bottom card of the stack being moved.
+                  // The cards moved are the top 'moved_count' cards from the source column (before move).
+                  // But we already applied the move.
+                  // The cards are now at the top of 'dest' column.
+                  // The bottom card of the moved stack is at index: dest_size_after - moved_count.
+                  Card bottom_card = current_layout.GetTableau(move.to).card(dest_size_after - moved_count);
+                  encoded_step = bottom_card.ToCleanString() + "#" + to_string(moved_count) + "_" + to_string(move.from) + "_~" + to_string(move.to) + "~";
+              }
+          }
+
+          PrintMove(card_name, source, dest, on_card, false, encoded_step);
+
+          // Check for Auto Moves triggered by this move
+          encoded_solution_string += CaptureAutoMoves(current_layout);
+      }
+      
+      cout << "\nEncoded deck configuration\n" << deck_encoded_str << "\n\n";
+
+      cout << "Readable deck configuration\n";
+      Node display_layout;
+      display_layout.set_cards(cards);
+      display_layout.Show();
+      cout << "\n";
+
+      cout << "Encoded solution\n" << encoded_solution_string << "\n\n";
+      
+      // Deck Configuration is already encoded in deck_encoded_str
+
+      // Find next available filename sol_n in ../Solutions/
+      string filename;
+      int n = 0;
+      while (true) {
+          filename = "../Solutions/sol_" + to_string(n);
+          ifstream f(filename);
+          if (!f.good()) break;
+          n++;
+      }
+      
+      ofstream outfile(filename);
+      if (outfile.is_open()) {
+          outfile << deck_encoded_str << endl;
+          outfile << encoded_solution_string << endl;
+          cout << "Saved encoded solution to " << filename << "\n\n";
+      } else {
+          cerr << "Error: Could not open file " << filename << " for writing." << endl;
+      }
+
+      // Decode and show
+      cout << "Readable solution\n";
+      Node display_layout_final;
+      display_layout_final.set_cards(cards);
+      DecodeAndShow(encoded_solution_string, display_layout_final);
+
+      printf("-------------------------\n");
+  }
+
+  return 0;
+}
+
