@@ -57,7 +57,9 @@ void Node::Show(const Move& next_move) const {
   printf(" ]");
   if (next_move.type == kTableauToReserve) printf("↖");
   printf("  Foundation: ");
-  for (int i = 0; i < 4; ++i) {
+  int suit_order[] = {HEART, CLUB, DIAMOND, SPADE};
+  for (int k = 0; k < 4; ++k) {
+    int i = suit_order[k];
     if (next_move.type == kTableauToFoundation && next_move.to == i)
       printf("↗");
     if (next_move.type == kReserveToFoundation && next_move.to == i)
