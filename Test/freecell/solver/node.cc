@@ -80,7 +80,7 @@ void Node::Show(const Move& next_move) const {
     printf("        ");
     for (int i = 0; i < 8; ++i) {
       if (j < tableau_[i].size()) {
-        bool underline = (j == tableau_[i].unsorted_size());
+        bool underline = (j == tableau_[i].size() - 1);
         printf("%s  ", tableau_[i].card(j).ToString(underline));
         continue;
       }
