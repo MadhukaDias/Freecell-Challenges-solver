@@ -571,6 +571,19 @@ int main(int argc, char** argv) {
   options.auto_play = true;
   Node::Initialize();
 
+  // Determine solutions directory
+  string solutions_dir = "../Solutions/";
+  {
+      ifstream check_dir(solutions_dir + "sol_0");
+      if (!check_dir.good()) {
+          string alt_dir = "Test/freecell/Solutions/";
+          ifstream check_alt(alt_dir + "sol_0");
+          if (check_alt.good()) {
+              solutions_dir = alt_dir;
+          }
+      }
+  }
+
   // Encoded Deck Configuration
   string encoded_deck = "0000000000000000its9d9cjd8hqsksii7hkh1c2h1d8s1hiii8ckc4s6s5htc3civ8d4djc9h4c6h2cv9s7s3s5d1s5svi3hqh6dtd2s2dvii6c4hthqd7ckdviii3djhjs5cqc7d";
 
@@ -661,7 +674,7 @@ int main(int argc, char** argv) {
   // Check if solution already exists
   int check_n = 0;
   while (true) {
-      string check_filename = "../Solutions/sol_" + to_string(check_n);
+      string check_filename = solutions_dir + "sol_" + to_string(check_n);
       ifstream f(check_filename);
       if (!f.good()) break;
 
@@ -860,13 +873,15 @@ int main(int argc, char** argv) {
       
       // Deck Configuration is already encoded in deck_encoded_str
 
-      // Find next available filename sol_n in ../Solutions/
+      // Find next available filename sol_n in solutions_dir
       string filename;
       int n = 0;
       while (true) {
-          filename = "../Solutions/sol_" + to_string(n);
+          filename = solutions_dir + "sol_" + to_string(n);
           ifstream f(filename);
-          if (!f.good()) break;
+          bool exists = f.good();
+          f.close();
+          if (!exists) break;
           n++;
       }
       
