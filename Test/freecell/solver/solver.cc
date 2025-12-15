@@ -585,7 +585,7 @@ int main(int argc, char** argv) {
   }
 
   // Encoded Deck Configuration
-  string encoded_deck = "5s5d7s001h00003sits9d9cjd8hqsksii7hkh1c2h1d8s7diii8ckc4s6s5htc3c2div8d4djc9h4c6h2cvvi3hqh6dtd9svii6c4hthqd7ckdqcviii3djhjs5c";
+  string encoded_deck = "0000000000000000i8htd4sjs4d5dtsii4c5c6c5s8c9dkhiii7s1djd2cks1h4hivqc8s9h7dth7htcv6s3cqh2djh5hvikd1s3s6h9s6dvii7c1c2h9ckc2sviiiqd8d3dqs3hjc";
 
   // Parse Reserve (first 8 chars -> 4 slots)
   vector<Card> reserve_cards;

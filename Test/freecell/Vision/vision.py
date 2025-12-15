@@ -3,17 +3,19 @@ import numpy as np
 import os
 
 # --- CONFIGURATION (Must match your aligned grid) ---
-START_X = 87
+ALL_X = 0
+ALL_Y = 6
+START_X = 87 + ALL_X
 COL_SPACING = 185
-START_Y = 218
+START_Y = 218 + ALL_Y
 VERTICAL_FAN = 51
 BOX_WIDTH = 27
 BOX_HEIGHT = 44
 
 # --- Top Row Configuration (Freecells & Foundations) ---
-TOP_ROW_Y = 8          # Y-coordinate for the top row
-FREECELL_START_X = 36  # X-coordinate for first Freecell (aligns with Col 1)
-FOUNDATION_START_X = 878 # X-coordinate for first Foundation (aligns with Col 5)
+TOP_ROW_Y = 18         # Y-coordinate for the top row
+FREECELL_START_X = 36 + ALL_X   # X-coordinate for first Freecell (aligns with Col 1)
+FOUNDATION_START_X = 878 + ALL_X # X-coordinate for first Foundation (aligns with Col 5)
 # ----------------------------------------------------
 
 def load_templates():
@@ -191,7 +193,7 @@ def read_board(image_path):
 
 if __name__ == "__main__":
     # Define input path
-    input_path = "C:/Users/madhu/Desktop/Freecell solver/Test/freecell/Vision/Screenshot 2025-12-14 025648.png"
+    input_path = "C:/Users/madhu/Desktop/Freecell solver/Test/freecell/Vision/Screenshot 2025-12-15 145643.png"
     
     # Run the reader
     freecells, foundations, tableau, visual_output = read_board(input_path)
