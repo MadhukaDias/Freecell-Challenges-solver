@@ -25,3 +25,10 @@ Thumbs.db
 # Editor directories
 .vscode/
 .idea/
+
+# Model training output
+runs/
+__pycache__/
+*.pt
+My-First-Project-3/
+Test/freecell/Model/
