@@ -45,7 +45,7 @@ def parse_card_name(name):
 
 def get_sorted_children(control):
     """Gets children and sorts them Left-to-Right (X coordinate)"""
-    if not control.Exists(0, 1):
+    if not control.Exists(0, 0):
         return []
     children = control.GetChildren()
     children.sort(key=lambda c: c.BoundingRectangle.left)
@@ -159,6 +159,29 @@ class SolutionOverlay:
         print("Initializing Overlay...")
         self.steps = steps
         self.current_step_index = 0
+        
+        # Cache UI Controls to avoid re-finding them every frame
+        self.window = auto.WindowControl(searchDepth=1, RegexName=".*Solitaire.*")
+        self.tableau_group = self.window.GroupControl(AutomationId="Group_Tableau")
+        self.freecell_group = self.window.GroupControl(AutomationId="Group_Free")
+        self.foundation_group = self.window.GroupControl(AutomationId="Group_Foundation")
+        
+        # Cache static containers (Columns/Slots) to avoid fetching them every frame
+        # We assume the window is visible and these elements exist during init
+        self.tableau_columns = []
+        self.reserve_slots = []
+        self.foundation_piles = []
+        
+        try:
+            if self.tableau_group.Exists(0,0):
+                self.tableau_columns = get_sorted_children(self.tableau_group)
+            if self.freecell_group.Exists(0,0):
+                self.reserve_slots = get_sorted_children(self.freecell_group)
+            if self.foundation_group.Exists(0,0):
+                self.foundation_piles = get_sorted_children(self.foundation_group)
+        except Exception as e:
+            print(f"Warning: Could not cache UI elements: {e}")
+
         self.root = tk.Tk()
         self.root.attributes('-fullscreen', True)
         self.root.attributes('-topmost', True)
@@ -200,36 +223,22 @@ class SolutionOverlay:
         Finds the bounding rect for 'Tableau 1', 'Reserve', 'Foundation'.
         Returns (left, top, right, bottom) or None.
         """
-        window = auto.WindowControl(searchDepth=1, RegexName=".*Solitaire.*")
-        if not window.Exists(0, 0):
+        if not self.window.Exists(0, 0):
             return None
             
-        # Parse location: "Tableau 1", "Reserve", "Foundation"
-        # Note: Solver output says "Reserve" (generic) or "Foundation" (generic) usually?
-        # Let's check solver output again.
-        # "Move ... from Reserve to ..." -> Which reserve slot?
-        # "Move ... from Tableau 2 to ..."
-        
-        # We need to find the specific card if possible, or the pile.
-        
-        tableau_group = window.GroupControl(AutomationId="Group_Tableau")
-        freecell_group = window.GroupControl(AutomationId="Group_Free")
-        foundation_group = window.GroupControl(AutomationId="Group_Foundation")
-        
         target_rect = None
         
         if "Tableau" in location_str:
             # "Tableau 1" -> index 0
             try:
                 idx = int(location_str.split()[-1]) - 1
-                stacks = get_sorted_children(tableau_group)
-                if 0 <= idx < len(stacks):
-                    stack = stacks[idx]
+                if 0 <= idx < len(self.tableau_columns):
+                    stack = self.tableau_columns[idx]
                     # We want the TOP card (last child) for Source
                     # Or the empty stack placeholder for Dest
-                    cards = get_sorted_children(stack)
-                    if cards:
-                        target_rect = cards[-1].BoundingRectangle
+                    children = stack.GetChildren()
+                    if children:
+                        target_rect = children[-1].BoundingRectangle
                     else:
                         target_rect = stack.BoundingRectangle
             except:
@@ -250,9 +259,9 @@ class SolutionOverlay:
     def get_card_rect(self, card_name, location_hint):
         """
         Finds the specific card (e.g. '8S') in the UI.
+        Uses location_hint (e.g. 'Tableau 1') to narrow search.
         """
-        window = auto.WindowControl(searchDepth=1, RegexName=".*Solitaire.*")
-        if not window.Exists(0, 0):
+        if not self.window.Exists(0, 0):
             return None
             
         # Convert '8S' to "Eight of Spades"
@@ -266,129 +275,187 @@ class SolutionOverlay:
         s_code = card_name[-1].upper()
         
         if r_code not in rank_map or s_code not in suit_map:
-            print(f"Debug: Unknown card code {card_name}")
             return None
             
         full_name = f"{rank_map[r_code]} of {suit_map[s_code]}"
-        
-        # Use RegexName to handle cases where the name might have suffixes like " - Hint" or " Selected"
-        # The glow effect often changes the name or adds a wrapper that affects exact matching.
         regex_name = f".*{full_name}.*"
         
-        # Search for this element using a more generic Control type
-        # Increase search depth to ensure we find it nested in groups
-        card_el = window.Control(RegexName=regex_name, searchDepth=12)
-        if card_el.Exists(0, 0):
-            return card_el.BoundingRectangle
+        # 1. Targeted Search based on Hint
+        if "Tableau" in location_hint:
+            try:
+                # "Tableau 1" -> index 0
+                idx = int(location_hint.split()[-1]) - 1
+                if 0 <= idx < len(self.tableau_columns):
+                    col = self.tableau_columns[idx]
+                    # Search ONLY in this column
+                    card_el = col.Control(RegexName=regex_name, searchDepth=2)
+                    if card_el.Exists(0, 0): return card_el.BoundingRectangle
+            except:
+                pass
         
-        # Fallback: Try searching specifically in groups if global search fails
-        # This can sometimes be faster or find things the global search missed
-        for group_id in ["Group_Tableau", "Group_Free", "Group_Foundation"]:
-            group = window.GroupControl(AutomationId=group_id)
-            if group.Exists(0,0):
-                card_el = group.Control(RegexName=regex_name, searchDepth=4)
-                if card_el.Exists(0,0):
-                    return card_el.BoundingRectangle
+        elif "Reserve" in location_hint:
+            # Search ONLY in reserve slots
+            # We can search the group, or iterate slots. Group is faster.
+            card_el = self.freecell_group.Control(RegexName=regex_name, searchDepth=2)
+            if card_el.Exists(0, 0): return card_el.BoundingRectangle
 
-        print(f"Debug: Card element '{full_name}' not found via RegexName search.")
+        # 2. Fallback: Optimized Group Search (if hint failed or was empty)
+        # Tableau (Most likely)
+        card_el = self.tableau_group.Control(RegexName=regex_name, searchDepth=5)
+        if card_el.Exists(0, 0): return card_el.BoundingRectangle
+        
+        # Reserve
+        card_el = self.freecell_group.Control(RegexName=regex_name, searchDepth=3)
+        if card_el.Exists(0, 0): return card_el.BoundingRectangle
+        
+        # Foundation
+        card_el = self.foundation_group.Control(RegexName=regex_name, searchDepth=3)
+        if card_el.Exists(0, 0): return card_el.BoundingRectangle
+
         return None
 
     def get_empty_slot_rect(self, location_type, index=None, suit=None):
         """Finds an empty slot in Tableau, Reserve, or Foundation"""
-        window = auto.WindowControl(searchDepth=1, RegexName=".*Solitaire.*")
-        if not window.Exists(0, 0): return None
+        if not self.window.Exists(0, 0): return None
         
         if location_type == "Tableau" and index is not None:
-            tableau_group = window.GroupControl(AutomationId="Group_Tableau")
-            stacks = get_sorted_children(tableau_group)
-            if 0 <= index < len(stacks):
-                # If stack is empty, return stack rect. 
-                # If not empty, return top card rect (for stacking)
-                cards = get_sorted_children(stacks[index])
-                if cards: return cards[-1].BoundingRectangle
-                return stacks[index].BoundingRectangle
-            else:
-                print(f"Debug: Tableau index {index} out of range (0-{len(stacks)-1})")
+            # Use cached columns
+            if 0 <= index < len(self.tableau_columns):
+                stack = self.tableau_columns[index]
+                # Optimization: Don't sort, just get children. Last child is top card.
+                children = stack.GetChildren()
+                if children: return children[-1].BoundingRectangle
+                return stack.BoundingRectangle
 
         elif location_type == "Reserve":
-            freecell_group = window.GroupControl(AutomationId="Group_Free")
-            slots = get_sorted_children(freecell_group)
-            # Try to find an empty slot
-            for slot in slots:
+            # Use cached slots
+            for slot in self.reserve_slots:
                 if "empty" in slot.Name.lower() or not slot.GetChildren():
                     return slot.BoundingRectangle
-            # If no empty slot found (shouldn't happen if solver says move to reserve), return first slot
-            if slots: return slots[0].BoundingRectangle
+            if self.reserve_slots: return self.reserve_slots[0].BoundingRectangle
                     
         elif location_type == "Foundation":
-            foundation_group = window.GroupControl(AutomationId="Group_Foundation")
-            slots = get_sorted_children(foundation_group)
-            
-            if suit and len(slots) >= 4:
-                # User specified order: Hearts, Clubs, Diamonds, Spades
+            # Use cached piles
+            if suit and len(self.foundation_piles) >= 4:
                 suit_map = {'H': 0, 'C': 1, 'D': 2, 'S': 3}
                 if suit in suit_map:
                     idx = suit_map[suit]
-                    if idx < len(slots):
-                        return slots[idx].BoundingRectangle
+                    if idx < len(self.foundation_piles):
+                        return self.foundation_piles[idx].BoundingRectangle
             
-            # Fallback
-            if slots: return slots[0].BoundingRectangle
+            if self.foundation_piles: return self.foundation_piles[0].BoundingRectangle
             
         return None
 
     def get_column_rect(self, index):
-        window = auto.WindowControl(searchDepth=1, RegexName=".*Solitaire.*")
-        if not window.Exists(0, 0): return None
-        tableau_group = window.GroupControl(AutomationId="Group_Tableau")
-        stacks = get_sorted_children(tableau_group)
-        if 0 <= index < len(stacks):
-            return stacks[index].BoundingRectangle
+        if 0 <= index < len(self.tableau_columns):
+            return self.tableau_columns[index].BoundingRectangle
         return None
 
     def get_group_rect(self, group_id):
-        window = auto.WindowControl(searchDepth=1, RegexName=".*Solitaire.*")
-        if not window.Exists(0, 0): return None
-        return window.GroupControl(AutomationId=group_id).BoundingRectangle
+        # Use cached groups based on ID
+        if group_id == "Group_Foundation":
+            return self.foundation_group.BoundingRectangle
+        elif group_id == "Group_Free":
+            return self.freecell_group.BoundingRectangle
+        elif group_id == "Group_Tableau":
+            return self.tableau_group.BoundingRectangle
+        return None
+
+    def get_foundation_ranks(self):
+        """Returns a dict {suit_char_upper: max_rank} for cards currently in foundation."""
+        ranks = {'H': 0, 'D': 0, 'C': 0, 'S': 0}
+        
+        # Use cached piles
+        for pile in self.foundation_piles:
+            children = pile.GetChildren()
+            top_name = children[-1].Name if children else pile.Name
+            val = parse_card_name(top_name)
+            if val:
+                r, s = val
+                s_upper = s.upper()
+                if r > ranks.get(s_upper, 0):
+                    ranks[s_upper] = r
+        return ranks
+
+    def parse_step_card_info(self, step_str):
+        """Extracts (rank_int, suit_char_upper) from step string like 'Move 8S from...'"""
+        card_match = re.search(r"Move (?:stack of \d+ cards \()?([0-9TJQK][SHDC])\)? from", step_str)
+        if not card_match: return None
+        
+        card_code = card_match.group(1) # e.g. '8S'
+        if len(card_code) < 2: return None
+        
+        r_char = card_code[:-1]
+        s_char = card_code[-1]
+        
+        rank_map_inv = {'A': 1, '1': 1, '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9, 'T': 10, 'J': 11, 'Q': 12, 'K': 13}
+        r_int = rank_map_inv.get(r_char, 0)
+        
+        return (r_int, s_char)
 
     def update_overlay(self):
         if not self.running: return
         
         # 1. Check Window State
-        window = auto.WindowControl(searchDepth=1, RegexName=".*Solitaire.*")
-        if not window.Exists(0, 0):
-            print("Debug: Solitaire window not found.")
+        # Use cached window control
+        if not self.window.Exists(0, 0):
+            # print("Debug: Solitaire window not found.")
             self.canvas.delete("all")
-            self.root.after(500, self.update_overlay)
+            self.root.after(100, self.update_overlay)
             return
             
-        if win32gui.IsIconic(window.NativeWindowHandle):
-            # print("Debug: Window is minimized.") # Commented out to avoid spam
+        if win32gui.IsIconic(self.window.NativeWindowHandle):
             self.canvas.delete("all")
             self.root.after(100, self.update_overlay)
             return
 
-        # 2. Draw Current Step
-        if self.current_step_index < len(self.steps):
+        # 2. Draw Current Step (Loop to allow skipping)
+        while self.current_step_index < len(self.steps):
             step = self.steps[self.current_step_index]
             
             # Parse Step
-            # "Move 8S from Tableau 2 to Tableau 5"
-            # "Move 1D from Tableau 2 to Foundation"
+            card_match = re.search(r"Move (?:stack of \d+ cards \()?([0-9TJQK][SHDC])\)? from (.*?) to", step)
+            card_name = card_match.group(1) if card_match else None
+            source_hint = card_match.group(2) if card_match else ""
+            card_suit = card_name[-1] if card_name else None
             
             src_rect = None
             dest_rect = None
             
-            # Extract Card Name (e.g. 8S)
-            card_match = re.search(r"Move (?:stack of \d+ cards \()?([0-9TJQK][SHDC])\)? from", step)
-            card_name = card_match.group(1) if card_match else None
-            card_suit = card_name[-1] if card_name else None
-            
             # Find Source Rect (The Card itself)
             if card_name:
-                src_rect = self.get_card_rect(card_name, "")
+                src_rect = self.get_card_rect(card_name, source_hint)
                 if not src_rect:
-                    print(f"Debug: Could not find source card '{card_name}'")
+                    # print(f"Debug: Could not find source card '{card_name}'")
+                    
+                    # CHECK IF ALREADY IN FOUNDATION (Batch Auto-Move handling)
+                    # Scrape foundation ONCE
+                    f_ranks = self.get_foundation_ranks()
+                    
+                    # Check current step
+                    curr_info = self.parse_step_card_info(step)
+                    if curr_info:
+                        c_rank, c_suit = curr_info
+                        if c_rank <= f_ranks.get(c_suit, 0):
+                            print(f"Step {self.current_step_index + 1} Skipped: {card_name} is already in Foundation.")
+                            self.current_step_index += 1
+                            
+                            # Look ahead and skip ALL subsequent steps that are also in foundation
+                            while self.current_step_index < len(self.steps):
+                                next_step = self.steps[self.current_step_index]
+                                next_info = self.parse_step_card_info(next_step)
+                                if next_info:
+                                    n_rank, n_suit = next_info
+                                    if n_rank <= f_ranks.get(n_suit, 0):
+                                        print(f"Step {self.current_step_index + 1} Skipped (Auto-move): {next_step}")
+                                        self.current_step_index += 1
+                                        continue
+                                break
+                            
+                            # Continue outer loop to process the new current step immediately
+                            self.canvas.delete("all")
+                            continue
             
             # Find Dest Rect
             if "to Foundation" in step:
@@ -403,12 +470,13 @@ class SolutionOverlay:
                     dest_rect = self.get_empty_slot_rect("Tableau", idx)
             
             if not dest_rect:
-                 print(f"Debug: Could not find destination for step: {step}")
+                 # print(f"Debug: Could not find destination for step: {step}")
+                 pass
 
             self.canvas.delete("all")
             
             if src_rect:
-                print(f"Debug: Drawing overlay for {card_name} at {src_rect}")
+                # print(f"Debug: Drawing overlay for {card_name} at {src_rect}")
                 # Draw Box around Source
                 x1, y1, x2, y2 = src_rect.left, src_rect.top, src_rect.right, src_rect.bottom
                 self.canvas.create_rectangle(x1, y1, x2, y2, outline="red", width=3)
@@ -442,10 +510,6 @@ class SolutionOverlay:
                         # Check if inside foundation area
                         if f_rect.left <= cx <= f_rect.right and f_rect.top <= cy <= f_rect.bottom:
                             is_at_dest = True
-                        else:
-                            # Debug print occasionally
-                            # print(f"Debug: Card at ({cx},{cy}) not in Foundation ({f_rect.left},{f_rect.top},{f_rect.right},{f_rect.bottom})")
-                            pass
                         
                 elif "to Reserve" in step:
                     r_rect = self.get_group_rect("Group_Free")
@@ -463,19 +527,20 @@ class SolutionOverlay:
                         if c_rect:
                             if c_rect.left <= cx <= c_rect.right and c_rect.top <= cy:
                                 is_at_dest = True
-                            else:
-                                # print(f"Debug: Card at ({cx},{cy}) not in Col {idx} ({c_rect.left},{c_rect.top},{c_rect.right},{c_rect.bottom})")
-                                pass
                 
                 if is_at_dest:
                     print(f"Step {self.current_step_index + 1} Complete: {card_name} detected in destination.")
                     self.current_step_index += 1
                     # Clear canvas immediately to give feedback
                     self.canvas.delete("all")
-                    # Allow loop to continue to schedule next update
-                    pass
+                    # Continue outer loop to process next step immediately
+                    continue
+
+            # If we successfully drew the step (or failed to find dest but didn't skip), break the loop to wait for next frame
+            break
 
         else:
+            # Loop finished (index >= len)
             self.canvas.delete("all")
             self.canvas.create_text(500, 500, text="Solved!", fill="green", font=("Arial", 30))
             # Draw Close Button
@@ -484,7 +549,7 @@ class SolutionOverlay:
             self.canvas.create_text(w-80, 30, text="Exit", fill="white", font=("Arial", 12, "bold"))
             self.canvas.bind("<Button-1>", lambda e: sys.exit(0))
 
-        self.root.after(50, self.update_overlay)
+        self.root.after(1, self.update_overlay)
 
 # --- 6. MAIN EXECUTION ---
 
