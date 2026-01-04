@@ -4,29 +4,11 @@ import time
 import subprocess
 import sys
 import os
-import flet as ft
-import flet.canvas as cv
+import tkinter as tk
+import win32api
+import win32con
 import win32gui
 import threading
-import asyncio
-import ctypes
-
-try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(1)
-except Exception:
-    ctypes.windll.user32.SetProcessDPIAware()
-
-def get_scale_factor():
-    try:
-        hdc = ctypes.windll.user32.GetDC(0)
-        dpi = ctypes.windll.gdi32.GetDeviceCaps(hdc, 88) # LOGPIXELSX
-        ctypes.windll.user32.ReleaseDC(0, hdc)
-        return dpi / 96.0
-    except:
-        return 1.0
-
-SCALE_FACTOR = get_scale_factor()
-print(f"Detected Scale Factor: {SCALE_FACTOR}")
 
 # --- 1. CONFIGURATION & MAPPINGS ---
 
@@ -170,7 +152,7 @@ def generate_encoded_string(state):
 
     return fc_str + fo_str + tab_str
 
-# --- 5. OVERLAY LOGIC (FLET) ---
+# --- 5. OVERLAY LOGIC ---
 
 class SolutionOverlay:
     def __init__(self, steps):
@@ -200,57 +182,80 @@ class SolutionOverlay:
         except Exception as e:
             print(f"Warning: Could not cache UI elements: {e}")
 
-        # Start Flet App
-        ft.app(target=self.main_loop)
+        self.root = tk.Tk()
+        self.root.attributes('-fullscreen', True)
+        self.root.attributes('-topmost', True)
+        self.root.attributes('-alpha', 1.0) # Fully opaque for solid colors
+        self.root.attributes('-transparentcolor', 'white')
+        self.root.config(bg='white')
+        
+        # Bind Spacebar to Next Step
+        self.root.bind("<space>", self.force_next_step)
+        self.root.bind("<Right>", self.force_next_step)
+        
+        self.canvas = tk.Canvas(self.root, bg='white', highlightthickness=0)
+        self.canvas.pack(fill='both', expand=True)
+        
+        # Add a button-like text for manual advance
+        self.canvas.bind("<Button-1>", self.check_button_click)
+        
+        self.last_click_state = False
+        self.running = True
+        
+        # Start update loop
+        self.update_overlay()
+        self.root.mainloop()
 
-    async def main_loop(self, page: ft.Page):
-        self.page = page
-        page.padding = 0
-        page.spacing = 0
-        page.window.bgcolor = ft.Colors.TRANSPARENT
-        page.bgcolor = ft.Colors.TRANSPARENT
-        page.window.title_bar_hidden = True
-        page.window.frameless = True
-        page.window.always_on_top = True
-        page.window.maximized = True
-        page.window.ignore_mouse_events = True # Click-through
+    def force_next_step(self, event=None):
+        if self.current_step_index < len(self.steps):
+            print(f"Manual Advance: Skipping Step {self.current_step_index + 1}")
+            self.current_step_index += 1
+            self.canvas.delete("all")
+
+    def check_button_click(self, event):
+        # Check if clicked on "Next Step" button (top right)
+        w = self.root.winfo_screenwidth()
+        # Updated coordinates for Modern UI button
+        if w - 160 <= event.x <= w - 20 and 20 <= event.y <= 60:
+            self.force_next_step()
+
+    def get_element_rect(self, location_str):
+        """
+        Finds the bounding rect for 'Tableau 1', 'Reserve', 'Foundation'.
+        Returns (left, top, right, bottom) or None.
+        """
+        if not self.window.Exists(0, 0):
+            return None
+            
+        target_rect = None
         
-        # Create controls for Source and Dest
-        # We use AnimatedContainer for fade effects
-        self.src_box = ft.Container(
-            border=ft.Border.all(5, ft.Colors.AMBER),
-            border_radius=10,
-            animate_opacity=300,
-            opacity=0,
-            width=0, height=0,
-            left=0, top=0,
-        )
-        
-        # For dotted border, we can use a Stack of small containers or just a different color/style for now.
-        # Flet doesn't support dotted borders natively on Container yet.
-        # We will use a solid border with a different color or opacity to distinguish.
-        # Or we can use a ShaderMask if we want to get fancy, but let's stick to solid for reliability.
-        # User asked for "dotted outline". We can simulate it with a Canvas if needed, but let's try solid first with distinct style.
-        # Actually, let's use a Canvas for the destination to support dash pattern.
-        
-        self.dest_cv = cv.Canvas(
-            shapes=[],
-            left=0, top=0,
-            width=0, height=0,
-            opacity=0,
-            animate_opacity=300,
-        )
-        
-        self.stack = ft.Stack([self.dest_cv, self.src_box], expand=True)
-        page.add(self.stack)
-        
-        # Start the update loop
-        while self.current_step_index < len(self.steps):
-            await self.update_overlay()
-            await asyncio.sleep(0.05) # 20 FPS
-        
-        # Solved
-        pass
+        if "Tableau" in location_str:
+            # "Tableau 1" -> index 0
+            try:
+                idx = int(location_str.split()[-1]) - 1
+                if 0 <= idx < len(self.tableau_columns):
+                    stack = self.tableau_columns[idx]
+                    # We want the TOP card (last child) for Source
+                    # Or the empty stack placeholder for Dest
+                    children = stack.GetChildren()
+                    if children:
+                        target_rect = children[-1].BoundingRectangle
+                    else:
+                        target_rect = stack.BoundingRectangle
+            except:
+                pass
+                
+        elif "Reserve" in location_str:
+            # Solver output just says "Reserve" usually if moving FROM reserve?
+            # Or "Move 8S from Reserve". We can find 8S in reserve.
+            # If moving TO reserve, we need an empty slot.
+            pass
+            
+        elif "Foundation" in location_str:
+            # "Move ... to Foundation". Any empty foundation slot or matching suit.
+            pass
+            
+        return target_rect
 
     def get_stack_rect(self, top_card_rect, location_hint):
         """Expands rect to include all cards below the top card in the column."""
@@ -519,13 +524,20 @@ class SolutionOverlay:
         
         return (r_int, s_char)
 
-    async def update_overlay(self):
+    def update_overlay(self):
+        if not self.running: return
+        
         # 1. Check Window State
         # Use cached window control
         if not self.window.Exists(0, 0):
+            # print("Debug: Solitaire window not found.")
+            self.canvas.delete("all")
+            self.root.after(100, self.update_overlay)
             return
             
         if win32gui.IsIconic(self.window.NativeWindowHandle):
+            self.canvas.delete("all")
+            self.root.after(100, self.update_overlay)
             return
 
         # 2. Draw Current Step (Loop to allow skipping)
@@ -576,10 +588,7 @@ class SolutionOverlay:
                     if self.is_card_in_foundation(card_name):
                         print(f"Step {self.current_step_index + 1} Skipped: {card_name} is in Foundation.")
                         self.current_step_index += 1
-                        # Clear UI
-                        self.src_box.opacity = 0
-                        self.dest_cv.opacity = 0
-                        self.page.update()
+                        self.canvas.delete("all")
                         continue
 
                     # B. Check Destination (if not Foundation)
@@ -588,9 +597,7 @@ class SolutionOverlay:
                         if check_dest_rect:
                             print(f"Step {self.current_step_index + 1} Complete: {card_name} found in destination ({dest_hint}).")
                             self.current_step_index += 1
-                            self.src_box.opacity = 0
-                            self.dest_cv.opacity = 0
-                            self.page.update()
+                            self.canvas.delete("all")
                             continue
                             
                     # C. Fallback: Check Foundation again (maybe it was auto-moved there)
@@ -598,9 +605,7 @@ class SolutionOverlay:
                     if self.is_card_in_foundation(card_name):
                         print(f"Step {self.current_step_index + 1} Skipped (Fallback): {card_name} is in Foundation.")
                         self.current_step_index += 1
-                        self.src_box.opacity = 0
-                        self.dest_cv.opacity = 0
-                        self.page.update()
+                        self.canvas.delete("all")
                         continue
             
             # Find Dest Rect (for drawing arrow)
@@ -619,41 +624,29 @@ class SolutionOverlay:
             if not dest_rect:
                  pass
 
-            # Update UI
+            self.canvas.delete("all")
+            
             if src_rect:
-                # Update Source Box
-                self.src_box.left = src_rect.left / SCALE_FACTOR
-                self.src_box.top = src_rect.top / SCALE_FACTOR
-                self.src_box.width = (src_rect.right - src_rect.left) / SCALE_FACTOR
-                self.src_box.height = (src_rect.bottom - src_rect.top) / SCALE_FACTOR
-                self.src_box.opacity = 1
-                
-                # Update Dest Box
-                if dest_rect:
-                    self.dest_cv.left = dest_rect.left / SCALE_FACTOR
-                    self.dest_cv.top = dest_rect.top / SCALE_FACTOR
-                    self.dest_cv.width = (dest_rect.right - dest_rect.left) / SCALE_FACTOR
-                    self.dest_cv.height = (dest_rect.bottom - dest_rect.top) / SCALE_FACTOR
-                    self.dest_cv.opacity = 1
-                    
-                    # Draw Dotted Rect on Canvas
-                    self.dest_cv.shapes = [
-                        cv.Rect(
-                            0, 0, 
-                            self.dest_cv.width, self.dest_cv.height, 
-                            paint=ft.Paint(
-                                style=ft.PaintingStyle.STROKE,
-                                stroke_width=5,
-                                color=ft.Colors.AMBER,
-                                stroke_dash_pattern=[10, 10]
-                            )
-                        )
-                    ]
-                else:
-                    self.dest_cv.opacity = 0
-                
-                self.page.update()
+                # --- Modern UI Styling (Minimalist Gold) ---
+                GOLD_COLOR = "#FFD500"   # Gold
 
+                # 1. Highlight Source (Solid Gold)
+                x1, y1, x2, y2 = src_rect.left, src_rect.top, src_rect.right, src_rect.bottom
+                self.canvas.create_rectangle(x1, y1, x2, y2, outline=GOLD_COLOR, width=5)
+
+                # 2. Highlight Destination (Dotted Gold)
+                if dest_rect:
+                    dx1, dy1, dx2, dy2 = dest_rect.left, dest_rect.top, dest_rect.right, dest_rect.bottom
+                    self.canvas.create_rectangle(dx1, dy1, dx2, dy2, outline=GOLD_COLOR, width=5, dash=(10, 10))
+
+                # 3. Check Completion (Auto-Advance)
+
+                # 3. HUD Instruction Bar (Bottom Center)
+                w = self.root.winfo_screenwidth()
+                h = self.root.winfo_screenheight()
+                
+                hud_w = 600
+                hud_h = 60
                 # 3. Check Completion (Auto-Advance)
                 # If the source card is now inside the destination area
                 cx = (src_rect.left + src_rect.right) // 2
@@ -700,13 +693,23 @@ class SolutionOverlay:
                 if is_at_dest:
                     print(f"Step {self.current_step_index + 1} Complete: {card_name} detected in destination.")
                     self.current_step_index += 1
-                    self.src_box.opacity = 0
-                    self.dest_cv.opacity = 0
-                    self.page.update()
+                    self.canvas.delete("all")
                     continue
 
             # If we successfully drew the step (or failed to find dest but didn't skip), break the loop to wait for next frame
             break
+
+        else:
+            # Loop finished (index >= len)
+            self.canvas.delete("all")
+            self.canvas.create_text(500, 500, text="Solved!", fill="green", font=("Arial", 30))
+            # Draw Close Button
+            w = self.root.winfo_screenwidth()
+            self.canvas.create_rectangle(w-150, 10, w-10, 50, fill="red", outline="black")
+            self.canvas.create_text(w-80, 30, text="Exit", fill="white", font=("Arial", 12, "bold"))
+            self.canvas.bind("<Button-1>", lambda e: sys.exit(0))
+
+        self.root.after(1, self.update_overlay)
 
 # --- 6. MAIN EXECUTION ---
 
