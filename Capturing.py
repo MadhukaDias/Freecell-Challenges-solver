@@ -218,12 +218,18 @@ class SolutionOverlay:
         # Create controls for Source and Dest
         # We use AnimatedContainer for fade effects
         self.src_box = ft.Container(
-            border=ft.Border.all(5, ft.Colors.AMBER),
-            border_radius=10,
-            animate_opacity=300,
+            border=ft.Border.all(3, ft.Colors.AMBER),
+            border_radius=6,
+            animate_opacity=150,
             opacity=0,
             width=0, height=0,
             left=0, top=0,
+            shadow=ft.BoxShadow(
+                spread_radius=0,
+                blur_radius=10,
+                color=ft.Colors.AMBER,
+                blur_style=ft.BlurStyle.OUTER,
+            )
         )
         
         # For dotted border, we can use a Stack of small containers or just a different color/style for now.
@@ -235,13 +241,25 @@ class SolutionOverlay:
         
         self.dest_cv = cv.Canvas(
             shapes=[],
+            expand=True
+        )
+        
+        self.dest_box = ft.Container(
+            content=self.dest_cv,
             left=0, top=0,
             width=0, height=0,
             opacity=0,
-            animate_opacity=300,
+            animate_opacity=150,
+            border_radius=10,
+            shadow=ft.BoxShadow(
+                spread_radius=0,
+                blur_radius=15,
+                color=ft.Colors.AMBER,
+                blur_style=ft.BlurStyle.OUTER,
+            )
         )
         
-        self.stack = ft.Stack([self.dest_cv, self.src_box], expand=True)
+        self.stack = ft.Stack([self.dest_box, self.src_box], expand=True)
         page.add(self.stack)
         
         # Start the update loop
@@ -576,10 +594,6 @@ class SolutionOverlay:
                     if self.is_card_in_foundation(card_name):
                         print(f"Step {self.current_step_index + 1} Skipped: {card_name} is in Foundation.")
                         self.current_step_index += 1
-                        # Clear UI
-                        self.src_box.opacity = 0
-                        self.dest_cv.opacity = 0
-                        self.page.update()
                         continue
 
                     # B. Check Destination (if not Foundation)
@@ -588,9 +602,6 @@ class SolutionOverlay:
                         if check_dest_rect:
                             print(f"Step {self.current_step_index + 1} Complete: {card_name} found in destination ({dest_hint}).")
                             self.current_step_index += 1
-                            self.src_box.opacity = 0
-                            self.dest_cv.opacity = 0
-                            self.page.update()
                             continue
                             
                     # C. Fallback: Check Foundation again (maybe it was auto-moved there)
@@ -598,9 +609,6 @@ class SolutionOverlay:
                     if self.is_card_in_foundation(card_name):
                         print(f"Step {self.current_step_index + 1} Skipped (Fallback): {card_name} is in Foundation.")
                         self.current_step_index += 1
-                        self.src_box.opacity = 0
-                        self.dest_cv.opacity = 0
-                        self.page.update()
                         continue
             
             # Find Dest Rect (for drawing arrow)
@@ -619,40 +627,71 @@ class SolutionOverlay:
             if not dest_rect:
                  pass
 
+            # Calculate dynamic outline width based on window width
+            win_rect = self.window.BoundingRectangle
+            win_width = win_rect.right - win_rect.left
+            # Base width 1920. Scale factor.
+            scale_ratio = win_width / 1920.0
+            # Clamp scale ratio to be reasonable (e.g. 0.5 to 2.0)
+            scale_ratio = max(0.5, min(2.0, scale_ratio))
+            
+            src_border_width = max(1, int(3 * scale_ratio))
+            dest_stroke_width = max(1, int(5 * scale_ratio))
+            
+            # Threshold for valid rectangle size
+            MIN_SIZE_THRESHOLD = 20
+
             # Update UI
             if src_rect:
                 # Update Source Box
-                self.src_box.left = src_rect.left / SCALE_FACTOR
-                self.src_box.top = src_rect.top / SCALE_FACTOR
-                self.src_box.width = (src_rect.right - src_rect.left) / SCALE_FACTOR
-                self.src_box.height = (src_rect.bottom - src_rect.top) / SCALE_FACTOR
-                self.src_box.opacity = 1
+                # Apply padding to align perfectly (shrink slightly to fit inside card)
+                padding = 0
+                s_width = (src_rect.right - src_rect.left - 2*padding) / SCALE_FACTOR
+                s_height = (src_rect.bottom - src_rect.top - 2*padding) / SCALE_FACTOR
+                
+                if s_width < MIN_SIZE_THRESHOLD or s_height < MIN_SIZE_THRESHOLD:
+                    self.src_box.opacity = 0
+                else:
+                    self.src_box.left = (src_rect.left + padding) / SCALE_FACTOR
+                    self.src_box.top = (src_rect.top + padding) / SCALE_FACTOR
+                    self.src_box.width = s_width
+                    self.src_box.height = s_height
+                    self.src_box.border = ft.Border.all(src_border_width, ft.Colors.AMBER)
+                    self.src_box.opacity = 1
                 
                 # Update Dest Box
                 if dest_rect:
-                    self.dest_cv.left = dest_rect.left / SCALE_FACTOR
-                    self.dest_cv.top = dest_rect.top / SCALE_FACTOR
-                    self.dest_cv.width = (dest_rect.right - dest_rect.left) / SCALE_FACTOR
-                    self.dest_cv.height = (dest_rect.bottom - dest_rect.top) / SCALE_FACTOR
-                    self.dest_cv.opacity = 1
+                    d_width = (dest_rect.right - dest_rect.left - 2*padding) / SCALE_FACTOR
+                    d_height = (dest_rect.bottom - dest_rect.top - 2*padding) / SCALE_FACTOR
                     
-                    # Draw Dotted Rect on Canvas
-                    self.dest_cv.shapes = [
-                        cv.Rect(
-                            0, 0, 
-                            self.dest_cv.width, self.dest_cv.height, 
-                            paint=ft.Paint(
-                                style=ft.PaintingStyle.STROKE,
-                                stroke_width=5,
-                                color=ft.Colors.AMBER,
-                                stroke_dash_pattern=[10, 10]
+                    if d_width < MIN_SIZE_THRESHOLD or d_height < MIN_SIZE_THRESHOLD:
+                        self.dest_box.opacity = 0
+                    else:
+                        self.dest_box.left = (dest_rect.left + padding) / SCALE_FACTOR
+                        self.dest_box.top = (dest_rect.top + padding) / SCALE_FACTOR
+                        self.dest_box.width = d_width
+                        self.dest_box.height = d_height
+                        self.dest_box.opacity = 1
+                        
+                        # Draw Dotted Rect on Canvas
+                        self.dest_cv.shapes = [
+                            cv.Rect(
+                                0, 0, 
+                                self.dest_box.width, self.dest_box.height, 
+                                border_radius=4,
+                                paint=ft.Paint(
+                                    style=ft.PaintingStyle.STROKE,
+                                    stroke_width=dest_stroke_width,
+                                    color=ft.Colors.AMBER,
+                                    stroke_dash_pattern=[10, 10]
+                                )
                             )
-                        )
-                    ]
+                        ]
                 else:
-                    self.dest_cv.opacity = 0
+                    self.dest_box.opacity = 0
                 
                 self.page.update()
+                await asyncio.sleep(0.05) # Wait for fade in
 
                 # 3. Check Completion (Auto-Advance)
                 # If the source card is now inside the destination area
@@ -701,8 +740,9 @@ class SolutionOverlay:
                     print(f"Step {self.current_step_index + 1} Complete: {card_name} detected in destination.")
                     self.current_step_index += 1
                     self.src_box.opacity = 0
-                    self.dest_cv.opacity = 0
+                    self.dest_box.opacity = 0
                     self.page.update()
+                    await asyncio.sleep(0.05)
                     continue
 
             # If we successfully drew the step (or failed to find dest but didn't skip), break the loop to wait for next frame
