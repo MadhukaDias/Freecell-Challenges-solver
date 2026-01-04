@@ -676,6 +676,61 @@ class SolutionOverlay:
 
             # Update UI
             if src_rect:
+                # 3. Check Completion (Auto-Advance) - CHECK BEFORE DRAWING
+                # If the source card is now inside the destination area
+                cx = (src_rect.left + src_rect.right) // 2
+                cy = (src_rect.top + src_rect.bottom) // 2
+                
+                is_at_dest = False
+                
+                if "Foundation" in dest_hint:
+                    f_rect = self.get_group_rect("Group_Foundation")
+                    if f_rect:
+                        if f_rect.left <= cx <= f_rect.right and f_rect.top <= cy <= f_rect.bottom:
+                            is_at_dest = True
+                        
+                elif "Reserve" in dest_hint:
+                    r_rect = self.get_group_rect("Group_Free")
+                    if r_rect:
+                        if r_rect.left <= cx <= r_rect.right and r_rect.top <= cy <= r_rect.bottom:
+                            is_at_dest = True
+                        
+                elif "Tableau" in dest_hint:
+                    # Use dest_rect (the specific card/slot we targeted) for precise checking
+                    if dest_rect:
+                        # Horizontal: Center of source is within width of dest
+                        h_aligned = dest_rect.left <= cx <= dest_rect.right
+                        
+                        # Vertical: Source top should be roughly within the destination card's vertical range
+                        # Case 1: Empty Column -> src.top ~= dest.top
+                        # Case 2: Stacking -> src.top > dest.top (offset)
+                        # We allow src.top to be anywhere from dest.top to dest.bottom
+                        # FIX: Add buffer to allow for slight misalignments (especially for empty columns)
+                        v_aligned = (dest_rect.top - 50) <= src_rect.top <= (dest_rect.bottom + 50)
+                        
+                        if h_aligned and v_aligned:
+                            is_at_dest = True
+                    else:
+                        # Fallback if dest_rect wasn't found (e.g. could not read column)
+                        t_match = re.search(r"Tableau (\d+)", dest_hint)
+                        if t_match:
+                            idx = int(t_match.group(1)) - 1
+                            c_rect = self.get_column_rect(idx)
+                            if c_rect:
+                                if c_rect.left <= cx <= c_rect.right and c_rect.top <= cy:
+                                    is_at_dest = True
+                
+                if is_at_dest:
+                    print(f"Step {self.current_step_index + 1} Complete: {card_name} detected in destination.")
+                    self.current_step_index += 1
+                    self.src_box.opacity = 0
+                    self.src_box_outer.opacity = 0
+                    self.dest_box.opacity = 0
+                    self.page.update()
+                    # Wait for fade out animation (150ms) to finish before moving to next step position
+                    await asyncio.sleep(0.1)
+                    continue
+
                 # Update Source Box
                 # Apply padding to align perfectly (shrink slightly to fit inside card)
                 padding = 0
@@ -746,58 +801,6 @@ class SolutionOverlay:
                 
                 self.page.update()
                 await asyncio.sleep(0.05) # Wait for fade in
-
-                # 3. Check Completion (Auto-Advance)
-                # If the source card is now inside the destination area
-                cx = (src_rect.left + src_rect.right) // 2
-                cy = (src_rect.top + src_rect.bottom) // 2
-                
-                is_at_dest = False
-                
-                if "Foundation" in dest_hint:
-                    f_rect = self.get_group_rect("Group_Foundation")
-                    if f_rect:
-                        if f_rect.left <= cx <= f_rect.right and f_rect.top <= cy <= f_rect.bottom:
-                            is_at_dest = True
-                        
-                elif "Reserve" in dest_hint:
-                    r_rect = self.get_group_rect("Group_Free")
-                    if r_rect:
-                        if r_rect.left <= cx <= r_rect.right and r_rect.top <= cy <= r_rect.bottom:
-                            is_at_dest = True
-                        
-                elif "Tableau" in dest_hint:
-                    # Use dest_rect (the specific card/slot we targeted) for precise checking
-                    if dest_rect:
-                        # Horizontal: Center of source is within width of dest
-                        h_aligned = dest_rect.left <= cx <= dest_rect.right
-                        
-                        # Vertical: Source top should be roughly within the destination card's vertical range
-                        # Case 1: Empty Column -> src.top ~= dest.top
-                        # Case 2: Stacking -> src.top > dest.top (offset)
-                        # We allow src.top to be anywhere from dest.top to dest.bottom
-                        v_aligned = dest_rect.top <= src_rect.top <= dest_rect.bottom
-                        
-                        if h_aligned and v_aligned:
-                            is_at_dest = True
-                    else:
-                        # Fallback if dest_rect wasn't found (e.g. could not read column)
-                        t_match = re.search(r"Tableau (\d+)", dest_hint)
-                        if t_match:
-                            idx = int(t_match.group(1)) - 1
-                            c_rect = self.get_column_rect(idx)
-                            if c_rect:
-                                if c_rect.left <= cx <= c_rect.right and c_rect.top <= cy:
-                                    is_at_dest = True
-                
-                if is_at_dest:
-                    print(f"Step {self.current_step_index + 1} Complete: {card_name} detected in destination.")
-                    self.current_step_index += 1
-                    self.src_box.opacity = 0
-                    self.dest_box.opacity = 0
-                    self.page.update()
-                    await asyncio.sleep(0.05)
-                    continue
 
             # If we successfully drew the step (or failed to find dest but didn't skip), break the loop to wait for next frame
             break
