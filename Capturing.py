@@ -18,7 +18,7 @@ NAME_TO_SUIT = {
 # Map Data to String Code (Output to Solver)
 # 1->'a', 10->'t', 13->'k'
 RANK_TO_CODE = {
-    1: 'a', 2: '2', 3: '3', 4: '4', 5: '5', 6: '6', 7: '7', 8: '8', 9: '9', 10: 't', 11: 'j', 12: 'q', 13: 'k'
+    1: '1', 2: '2', 3: '3', 4: '4', 5: '5', 6: '6', 7: '7', 8: '8', 9: '9', 10: 't', 11: 'j', 12: 'q', 13: 'k'
 }
 
 COLUMN_PREFIXES = ["i", "ii", "iii", "iv", "v", "vi", "vii", "viii"]
@@ -166,7 +166,7 @@ def main():
         print("\nRunning Solver...")
         try:
             # Assuming solver.exe is in the same directory
-            result = subprocess.run(["solver.exe", encoded_string], capture_output=True, text=True)
+            result = subprocess.run(["C:/Users/madhu/Desktop/Freecell solver/Test/freecell/solver/solver.exe", encoded_string], capture_output=True, text=True)
             print(result.stdout)
             if result.stderr:
                 print("Errors:", result.stderr)
