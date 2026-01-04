@@ -18,7 +18,7 @@ NAME_TO_RANK = {
     'Seven': 7, 'Eight': 8, 'Nine': 9, 'Ten': 10, 'Jack': 11, 'Queen': 12, 'King': 13
 }
 NAME_TO_SUIT = {
-    'Hearts': 'h', 'Diamonds': 'd', 'Clubs': 'c', 'Spades': 's'
+    'Hearts': 'h', 'Clubs': 'c', 'Diamonds': 'd', 'Spades': 's'
 }
 
 # Map Data to String Code (Output to Solver)
@@ -37,7 +37,7 @@ def parse_card_name(name):
         return None
         
     # Regex to capture rank and suit
-    match = re.search(r"(Ace|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten|Jack|Queen|King) of (Hearts|Diamonds|Clubs|Spades)", name)
+    match = re.search(r"(Ace|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten|Jack|Queen|King) of (Hearts|Clubs|Diamonds|Spades)", name)
     if match:
         rank_str, suit_str = match.groups()
         return (NAME_TO_RANK[rank_str], NAME_TO_SUIT[suit_str])
@@ -268,7 +268,7 @@ class SolutionOverlay:
         rank_map = {'1': 'Ace', '2': 'Two', '3': 'Three', '4': 'Four', '5': 'Five', 
                     '6': 'Six', '7': 'Seven', '8': 'Eight', '9': 'Nine', 'T': 'Ten', 
                     'J': 'Jack', 'Q': 'Queen', 'K': 'King'}
-        suit_map = {'H': 'Hearts', 'D': 'Diamonds', 'C': 'Clubs', 'S': 'Spades'}
+        suit_map = {'H': 'Hearts', 'C': 'Clubs', 'D': 'Diamonds', 'S': 'Spades'}
         
         if len(card_name) < 2: return None
         r_code = card_name[:-1].upper()
@@ -288,41 +288,133 @@ class SolutionOverlay:
                 if 0 <= idx < len(self.tableau_columns):
                     col = self.tableau_columns[idx]
                     # Search ONLY in this column
-                    card_el = col.Control(RegexName=regex_name, searchDepth=2)
+                    # Increased depth to 25 to ensure we find cards in deep stacks (nested or flat)
+                    card_el = col.Control(RegexName=regex_name, searchDepth=25)
                     if card_el.Exists(0, 0): return card_el.BoundingRectangle
             except:
                 pass
+            
+            # Fallback: If not found in specific column, search entire Tableau group
+            # This handles cases where the card might be in transit or index is off
+            card_el = self.tableau_group.Control(RegexName=regex_name, searchDepth=25)
+            if card_el.Exists(0, 0): return card_el.BoundingRectangle
         
         elif "Reserve" in location_hint:
             # Search ONLY in reserve slots
             # We can search the group, or iterate slots. Group is faster.
-            card_el = self.freecell_group.Control(RegexName=regex_name, searchDepth=2)
+            card_el = self.freecell_group.Control(RegexName=regex_name, searchDepth=3)
             if card_el.Exists(0, 0): return card_el.BoundingRectangle
 
-        # 2. Fallback: Optimized Group Search (if hint failed or was empty)
-        # Tableau (Most likely)
-        card_el = self.tableau_group.Control(RegexName=regex_name, searchDepth=5)
-        if card_el.Exists(0, 0): return card_el.BoundingRectangle
-        
-        # Reserve
-        card_el = self.freecell_group.Control(RegexName=regex_name, searchDepth=3)
-        if card_el.Exists(0, 0): return card_el.BoundingRectangle
-        
-        # Foundation
-        card_el = self.foundation_group.Control(RegexName=regex_name, searchDepth=3)
-        if card_el.Exists(0, 0): return card_el.BoundingRectangle
+        # 2. Fallback: Optimized Group Search (Only if hint is empty)
+        if not location_hint:
+            # Tableau (Most likely)
+            card_el = self.tableau_group.Control(RegexName=regex_name, searchDepth=5)
+            if card_el.Exists(0, 0): return card_el.BoundingRectangle
+            
+            # Reserve
+            card_el = self.freecell_group.Control(RegexName=regex_name, searchDepth=3)
+            if card_el.Exists(0, 0): return card_el.BoundingRectangle
+            
+            # Foundation
+            card_el = self.foundation_group.Control(RegexName=regex_name, searchDepth=3)
+            if card_el.Exists(0, 0): return card_el.BoundingRectangle
 
         return None
 
-    def get_empty_slot_rect(self, location_type, index=None, suit=None):
-        """Finds an empty slot in Tableau, Reserve, or Foundation"""
+    def is_card_in_foundation(self, card_name):
+        """Checks if a specific card is already in the foundation."""
+        if not card_name or len(card_name) < 2: return False
+        
+        # Parse card
+        r_code = card_name[:-1].upper()
+        s_code = card_name[-1].upper()
+        
+        rank_map = {'A': 1, '1': 1, '2': 2, '3': 3, '4': 4, '5': 5, 
+                    '6': 6, '7': 7, '8': 8, '9': 9, 'T': 10, 
+                    'J': 11, 'Q': 12, 'K': 13}
+        suit_map_idx = {'H': 0, 'C': 1, 'D': 2, 'S': 3}
+        
+        if r_code not in rank_map or s_code not in suit_map_idx:
+            return False
+            
+        target_rank = rank_map[r_code]
+        pile_idx = suit_map_idx[s_code]
+        
+        # Check specific pile
+        if pile_idx < len(self.foundation_piles):
+            pile = self.foundation_piles[pile_idx]
+            # Check if the pile's top card is >= target_rank
+            children = pile.GetChildren()
+            top_name = children[-1].Name if children else pile.Name
+            val = parse_card_name(top_name)
+            if val:
+                current_rank, current_suit = val
+                if current_suit.upper() == s_code and current_rank >= target_rank:
+                    return True
+        return False
+
+    def get_empty_slot_rect(self, location_type, index=None, suit=None, source_card_name=None):
+        """Finds an empty slot or specific target card in Tableau, Reserve, or Foundation"""
         if not self.window.Exists(0, 0): return None
         
         if location_type == "Tableau" and index is not None:
             # Use cached columns
             if 0 <= index < len(self.tableau_columns):
                 stack = self.tableau_columns[index]
-                # Optimization: Don't sort, just get children. Last child is top card.
+                
+                # OPTIMIZATION: If we know the source card, we can find the EXACT target card
+                # instead of just the "top" card. This handles stack moves where the target
+                # becomes buried.
+                if source_card_name:
+                    # 1. Calculate Target Rank/Color
+                    # Source: 9S (Black 9) -> Target: 10 (Red)
+                    r_code = source_card_name[:-1].upper()
+                    s_code = source_card_name[-1].upper()
+                    
+                    rank_map = {'A': 1, '1': 1, '2': 2, '3': 3, '4': 4, '5': 5, 
+                                '6': 6, '7': 7, '8': 8, '9': 9, 'T': 10, 
+                                'J': 11, 'Q': 12, 'K': 13}
+                    
+                    if r_code in rank_map:
+                        src_rank = rank_map[r_code]
+                        
+                        # If King, target is the empty stack itself
+                        if src_rank == 13:
+                            return stack.BoundingRectangle
+                            
+                        target_rank = src_rank + 1
+                        is_black = s_code in ['S', 'C']
+                        
+                        # 2. Search stack for the target card
+                        # We look for a card with Rank = target_rank and Color != is_black
+                        children = stack.GetChildren()
+                        best_match = None
+                        best_top = -1
+                        
+                        for child in children:
+                            val = parse_card_name(child.Name)
+                            if val:
+                                r, s = val
+                                child_is_black = s.upper() in ['S', 'C']
+                                if r == target_rank and child_is_black != is_black:
+                                    # Handle duplicate ranks (e.g. 9S and 9C in same column)
+                                    # The valid target is always the one lowest in the stack (highest Y)
+                                    try:
+                                        c_top = child.BoundingRectangle.top
+                                        if c_top > best_top:
+                                            best_match = child
+                                            best_top = c_top
+                                    except:
+                                        pass
+                        
+                        if best_match:
+                            return best_match.BoundingRectangle
+                        
+                        # 3. If target card NOT found, assume move to empty column
+                        # (Even if column is not empty now, it means we moved the stack there)
+                        return stack.BoundingRectangle
+
+                # Fallback: Just get the top card (last child)
                 children = stack.GetChildren()
                 if children: return children[-1].BoundingRectangle
                 return stack.BoundingRectangle
@@ -364,7 +456,7 @@ class SolutionOverlay:
 
     def get_foundation_ranks(self):
         """Returns a dict {suit_char_upper: max_rank} for cards currently in foundation."""
-        ranks = {'H': 0, 'D': 0, 'C': 0, 'S': 0}
+        ranks = {'H': 0, 'C': 0, 'D': 0, 'S': 0}
         
         # Use cached piles
         for pile in self.foundation_piles:
@@ -415,68 +507,80 @@ class SolutionOverlay:
             step = self.steps[self.current_step_index]
             
             # Parse Step
-            card_match = re.search(r"Move (?:stack of \d+ cards \()?([0-9TJQK][SHDC])\)? from (.*?) to", step)
-            card_name = card_match.group(1) if card_match else None
-            source_hint = card_match.group(2) if card_match else ""
-            card_suit = card_name[-1] if card_name else None
+            # Capture Source and Dest hints
+            card_match = re.search(r"Move (?:stack of \d+ cards \()?([0-9TJQK][SHDC])\)? from (.*?) to (.*)", step)
+            
+            card_name = None
+            source_hint = ""
+            dest_hint = ""
+            card_suit = None
+            
+            if card_match:
+                card_name = card_match.group(1)
+                source_hint = card_match.group(2).strip()
+                dest_hint = card_match.group(3).strip()
+                
+                # Normalize Destination Hint
+                # If it's just a number "1"-"8", treat as "Tableau N"
+                if dest_hint.isdigit() and 1 <= int(dest_hint) <= 8:
+                    dest_hint = f"Tableau {dest_hint}"
+                
+                card_suit = card_name[-1]
             
             src_rect = None
             dest_rect = None
             
             # Find Source Rect (The Card itself)
             if card_name:
+                # 1. Try finding card in Source
                 src_rect = self.get_card_rect(card_name, source_hint)
+                
                 if not src_rect:
-                    # print(f"Debug: Could not find source card '{card_name}'")
+                    # Card not in source. 
                     
-                    # CHECK IF ALREADY IN FOUNDATION (Batch Auto-Move handling)
-                    # Scrape foundation ONCE
-                    f_ranks = self.get_foundation_ranks()
-                    
-                    # Check current step
-                    curr_info = self.parse_step_card_info(step)
-                    if curr_info:
-                        c_rank, c_suit = curr_info
-                        if c_rank <= f_ranks.get(c_suit, 0):
-                            print(f"Step {self.current_step_index + 1} Skipped: {card_name} is already in Foundation.")
+                    # A. Check Foundation (Auto-move or Dest=Foundation)
+                    if self.is_card_in_foundation(card_name):
+                        print(f"Step {self.current_step_index + 1} Skipped: {card_name} is in Foundation.")
+                        self.current_step_index += 1
+                        self.canvas.delete("all")
+                        continue
+
+                    # B. Check Destination (if not Foundation)
+                    if "Foundation" not in dest_hint:
+                        check_dest_rect = self.get_card_rect(card_name, dest_hint)
+                        if check_dest_rect:
+                            print(f"Step {self.current_step_index + 1} Complete: {card_name} found in destination ({dest_hint}).")
                             self.current_step_index += 1
-                            
-                            # Look ahead and skip ALL subsequent steps that are also in foundation
-                            while self.current_step_index < len(self.steps):
-                                next_step = self.steps[self.current_step_index]
-                                next_info = self.parse_step_card_info(next_step)
-                                if next_info:
-                                    n_rank, n_suit = next_info
-                                    if n_rank <= f_ranks.get(n_suit, 0):
-                                        print(f"Step {self.current_step_index + 1} Skipped (Auto-move): {next_step}")
-                                        self.current_step_index += 1
-                                        continue
-                                break
-                            
-                            # Continue outer loop to process the new current step immediately
                             self.canvas.delete("all")
                             continue
+                            
+                    # C. Fallback: Check Foundation again (maybe it was auto-moved there)
+                    # This handles cases where dest was Tableau, but game auto-moved it to Foundation immediately
+                    if self.is_card_in_foundation(card_name):
+                        print(f"Step {self.current_step_index + 1} Skipped (Fallback): {card_name} is in Foundation.")
+                        self.current_step_index += 1
+                        self.canvas.delete("all")
+                        continue
             
-            # Find Dest Rect
-            if "to Foundation" in step:
+            # Find Dest Rect (for drawing arrow)
+            if "Foundation" in dest_hint:
                 dest_rect = self.get_empty_slot_rect("Foundation", suit=card_suit)
-            elif "to Reserve" in step:
+            elif "Reserve" in dest_hint:
                 dest_rect = self.get_empty_slot_rect("Reserve")
-            elif "to Tableau" in step:
+            elif "Tableau" in dest_hint:
                 # Extract Tableau Index
-                t_match = re.search(r"to Tableau (\d+)", step)
+                t_match = re.search(r"Tableau (\d+)", dest_hint)
                 if t_match:
                     idx = int(t_match.group(1)) - 1
-                    dest_rect = self.get_empty_slot_rect("Tableau", idx)
+                    # Pass card_name to find the specific target parent card
+                    dest_rect = self.get_empty_slot_rect("Tableau", idx, source_card_name=card_name)
             
             if not dest_rect:
-                 # print(f"Debug: Could not find destination for step: {step}")
                  pass
 
             self.canvas.delete("all")
             
             if src_rect:
-                # print(f"Debug: Drawing overlay for {card_name} at {src_rect}")
                 # Draw Box around Source
                 x1, y1, x2, y2 = src_rect.left, src_rect.top, src_rect.right, src_rect.bottom
                 self.canvas.create_rectangle(x1, y1, x2, y2, outline="red", width=3)
@@ -498,42 +602,51 @@ class SolutionOverlay:
 
                 # 3. Check Completion (Auto-Advance)
                 # If the source card is now inside the destination area
-                # We use the current src_rect which is updated every frame
                 cx = (src_rect.left + src_rect.right) // 2
                 cy = (src_rect.top + src_rect.bottom) // 2
                 
                 is_at_dest = False
                 
-                if "to Foundation" in step:
+                if "Foundation" in dest_hint:
                     f_rect = self.get_group_rect("Group_Foundation")
                     if f_rect:
-                        # Check if inside foundation area
                         if f_rect.left <= cx <= f_rect.right and f_rect.top <= cy <= f_rect.bottom:
                             is_at_dest = True
                         
-                elif "to Reserve" in step:
+                elif "Reserve" in dest_hint:
                     r_rect = self.get_group_rect("Group_Free")
                     if r_rect:
                         if r_rect.left <= cx <= r_rect.right and r_rect.top <= cy <= r_rect.bottom:
                             is_at_dest = True
                         
-                elif "to Tableau" in step:
-                    t_match = re.search(r"to Tableau (\d+)", step)
-                    if t_match:
-                        idx = int(t_match.group(1)) - 1
-                        c_rect = self.get_column_rect(idx)
-                        # Check if card is within the column's horizontal bounds
-                        # and generally in the vertical area (not way above)
-                        if c_rect:
-                            if c_rect.left <= cx <= c_rect.right and c_rect.top <= cy:
-                                is_at_dest = True
+                elif "Tableau" in dest_hint:
+                    # Use dest_rect (the specific card/slot we targeted) for precise checking
+                    if dest_rect:
+                        # Horizontal: Center of source is within width of dest
+                        h_aligned = dest_rect.left <= cx <= dest_rect.right
+                        
+                        # Vertical: Source top should be roughly within the destination card's vertical range
+                        # Case 1: Empty Column -> src.top ~= dest.top
+                        # Case 2: Stacking -> src.top > dest.top (offset)
+                        # We allow src.top to be anywhere from dest.top to dest.bottom
+                        v_aligned = dest_rect.top <= src_rect.top <= dest_rect.bottom
+                        
+                        if h_aligned and v_aligned:
+                            is_at_dest = True
+                    else:
+                        # Fallback if dest_rect wasn't found (e.g. could not read column)
+                        t_match = re.search(r"Tableau (\d+)", dest_hint)
+                        if t_match:
+                            idx = int(t_match.group(1)) - 1
+                            c_rect = self.get_column_rect(idx)
+                            if c_rect:
+                                if c_rect.left <= cx <= c_rect.right and c_rect.top <= cy:
+                                    is_at_dest = True
                 
                 if is_at_dest:
                     print(f"Step {self.current_step_index + 1} Complete: {card_name} detected in destination.")
                     self.current_step_index += 1
-                    # Clear canvas immediately to give feedback
                     self.canvas.delete("all")
-                    # Continue outer loop to process next step immediately
                     continue
 
             # If we successfully drew the step (or failed to find dest but didn't skip), break the loop to wait for next frame
