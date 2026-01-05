@@ -229,7 +229,39 @@ def scrape_challenge_info(window):
                     found_challenge = True
                     break
 
-    return challenge_code, moves_limit
+    if not found_challenge:
+        # Case D: "Twos" and "0/3" separated, without "Clear" keyword
+        for plural in NAME_TO_RANK_PLURAL.keys():
+            # Search for exact name "Twos" etc.
+            # Using RegexName to allow exact match or small variations if needed, but Name=plural is safer for exact matches.
+            # The user said text is "Twos".
+            el_plural = window.Control(Name=plural, searchDepth=15) 
+            if el_plural.Exists(0,0):
+                try:
+                    parent = el_plural.GetParentControl()
+                    siblings = parent.GetChildren()
+                    
+                    my_idx = -1
+                    for i, sib in enumerate(siblings):
+                        if sib.GetRuntimeId() == el_plural.GetRuntimeId():
+                            my_idx = i
+                            break
+                    
+                    # Check next sibling for count "0/3"
+                    if my_idx != -1 and my_idx + 1 < len(siblings):
+                        next_sib = siblings[my_idx+1]
+                        m_count = re.search(r"\d+/(\d+)", next_sib.Name)
+                        if m_count:
+                            count = m_count.group(1)
+                            r_int = NAME_TO_RANK_PLURAL.get(plural, 0)
+                            if r_int > 0:
+                                challenge_code = f"{RANK_TO_CODE[r_int]}{count}"
+                                found_challenge = True
+                                break
+                except Exception as e:
+                    print(f"Debug: Error in Case D: {e}")
+            if found_challenge:
+                break
 
     return challenge_code, moves_limit
 
@@ -993,8 +1025,6 @@ def main():
         print(f"\nCaptured State:")
         print(encoded_string)
         
-        return # Stop here to verify string
-
         # 3. Call Solver
         print("\nRunning Solver...")
         try:

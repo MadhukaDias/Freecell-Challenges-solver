@@ -659,11 +659,9 @@ int main(int argc, char** argv) {
   }
 
   // Encoded Deck Configuration
-  string encoded_deck = "0000000000000000i8htd4sjs4d5dtsii4c5c6c5s8c9dkhiii7s1djd2cks1h4hivqc8s9h7dth7htcv6s3cqh2djh5hvikd1s3s6h9s6dvii7c1c2h9ckc2sviiiqd8d3dqs3hjc";
+  string encoded_deck = "";
   
-  cout << "ARGC: " << argc << endl;
   if (argc > 1) {
-      cout << "ARGV[1]: " << argv[1] << endl;
       encoded_deck = argv[1];
   }
 
