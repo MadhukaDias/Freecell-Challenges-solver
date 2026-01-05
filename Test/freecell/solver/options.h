@@ -3,6 +3,7 @@
 
 #include <stdlib.h>
 #include <unistd.h>
+#include <string>
 
 struct Options {
   Options() = default;
@@ -30,6 +31,10 @@ struct Options {
   bool max_auto_play = false;
   bool auto_play = false;
   bool quiet = false;
+
+  // Challenge Support
+  std::string challenge_code = "00";
+  int move_limit = 0;
 };
 
 extern Options options;

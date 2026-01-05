@@ -169,15 +169,77 @@ Node* Beam::CreateNewLevel(const Bucket& cur_level, Bucket* new_level) {
   return solution.release();
 }
 
+bool CheckChallenge(const Node* node, const string& code) {
+    // cout << "Checking challenge: " << code << endl;
+    if (code == "00") return node->cards_unsorted() == 0;
+    
+    // Case 1: Specific Card (e.g., "jc" -> Jack of Clubs)
+    if (code.length() == 2 && isalpha(code[1])) {
+        char rank_char = code[0];
+        char suit_char = code[1];
+        
+        int suit = -1;
+        if (suit_char == 'c') suit = CLUB;
+        else if (suit_char == 'd') suit = DIAMOND;
+        else if (suit_char == 'h') suit = HEART;
+        else if (suit_char == 's') suit = SPADE;
+        
+        if (suit == -1) return false; 
+        
+        int rank = -1;
+        if (isdigit(rank_char)) {
+            rank = rank_char - '0';
+        } else {
+            if (rank_char == 't') rank = 10;
+            else if (rank_char == 'j') rank = 11;
+            else if (rank_char == 'q') rank = 12;
+            else if (rank_char == 'k') rank = 13;
+            else if (rank_char == 'a') rank = 1;
+        }
+        
+        if (rank > 0) rank -= 1; // Convert 1-based to 0-based
+        
+        bool has = node->GetFoundation(suit).Has(Card(suit, rank));
+        // cout << "Checking " << code << " Suit: " << suit << " Rank: " << rank << " FSize: " << node->GetFoundation(suit).size() << " Has: " << has << endl;
+        if (has) cout << "Challenge Met: " << code << endl;
+        return has;
+    }
+    
+    // Case 2: Count (e.g., "62" -> Two Sixes)
+    if (code.length() == 2 && isdigit(code[0]) && isdigit(code[1])) {
+        int rank_val = code[0] - '0'; 
+        int count_req = code[1] - '0'; 
+        
+        int target_rank = rank_val - 1;
+        
+        int count = 0;
+        for(int s=0; s<4; ++s) {
+            if (node->GetFoundation(s).Has(Card(s, target_rank))) {
+                count++;
+            }
+        }
+        return count >= count_req;
+    }
+    
+    return false;
+}
+
 Node* Beam::ProcessNewNodes(List<Node> new_nodes, Bucket* new_level) {
   ScopedNode solution(&pool_);
   for (auto* new_node : new_nodes) {
+    // Check Move Limit
+    if (options.move_limit > 0 && new_node->moves_performed() > options.move_limit) {
+        pool_.Delete(new_node);
+        continue;
+    }
+
     if (new_node->min_total_moves() >= upperbound_ ||
         new_node->bin() < new_level->lowerbound()) {
       pool_.Delete(new_node);
       continue;
     }
-    if (new_node->cards_unsorted() == 0 &&
+    
+    if (CheckChallenge(new_node, options.challenge_code) &&
         new_node->min_total_moves() < upperbound_) {
       solution.reset(new_node);
       upperbound_ = solution->min_total_moves();
@@ -263,8 +325,12 @@ string Beam::EncodeSolution(const Node& start, const Node& finish) const {
   string code;
   ScopedNode node(&pool_, pool_.New(start));
   Node::CompressedMoves::Reader reader(finish.moves());
+  
+  if (!options.quiet) cout << "EncodeSolution: moves_performed=" << finish.moves_performed() << " Unsorted=" << finish.cards_unsorted() << endl;
+
   for (int i = 0; i < finish.moves_performed(); ++i) {
     if (node->cards_unsorted() == 0) {
+      if (!options.quiet) cout << "EncodeSolution: Node solved at step " << i << ". Calling CompleteSolution." << endl;
       code += node->CompleteSolution();
       break;
     }
@@ -278,6 +344,7 @@ string Beam::EncodeSolution(const Node& start, const Node& finish) const {
     node.reset(picked_node);
     code += node->last_move().Encode();
   }
+  if (!options.quiet) cout << "EncodeSolution: Generated code length=" << code.length() << endl;
   return code;
 }
 
@@ -297,9 +364,10 @@ string Beam::Solve(const Node& layout) {
         Barrier();
       }
 
-      solution->CompleteSolution();
       if (beam_id_ == 0 && !options.quiet) solution->ShowSummary();
       coded_solution = EncodeSolution(layout, *solution);
+  } else {
+      if (beam_id_ == 0 && !options.quiet) printf("No solution found by BeamSearch.\n");
   }
   
   // if (beam_id_ == 0) printf("%d:%s\n", seed_, coded_solution.c_str());
@@ -530,9 +598,15 @@ void DecodeAndShow(string solution_str, Node layout) {
 }
 
 string CaptureAutoMoves(Node& node) {
+    if (!options.auto_play) return "";
     string encoded_moves = "";
     bool moved = true;
     while (moved) {
+        // Check challenge
+        if (options.challenge_code != "00" && CheckChallenge(&node, options.challenge_code)) {
+            break;
+        }
+
         moved = false;
         // Check Reserve
         for (int i = 0; i < node.GetReserve().size(); ++i) {
@@ -587,8 +661,36 @@ int main(int argc, char** argv) {
   // Encoded Deck Configuration
   string encoded_deck = "0000000000000000i8htd4sjs4d5dtsii4c5c6c5s8c9dkhiii7s1djd2cks1h4hivqc8s9h7dth7htcv6s3cqh2djh5hvikd1s3s6h9s6dvii7c1c2h9ckc2sviiiqd8d3dqs3hjc";
   
+  cout << "ARGC: " << argc << endl;
   if (argc > 1) {
+      cout << "ARGV[1]: " << argv[1] << endl;
       encoded_deck = argv[1];
+  }
+
+  // Parse Challenge and Moves if present
+  size_t first_dollar = encoded_deck.find('$');
+  if (first_dollar != string::npos) {
+      size_t second_dollar = encoded_deck.find('$', first_dollar + 1);
+      if (second_dollar != string::npos) {
+          options.challenge_code = encoded_deck.substr(first_dollar + 1, second_dollar - first_dollar - 1);
+          string moves_str = encoded_deck.substr(second_dollar + 1);
+          try {
+              options.move_limit = stoi(moves_str);
+          } catch (...) {
+              options.move_limit = 0;
+          }
+          if (options.move_limit > 0) {
+              if (options.challenge_code != "00") {
+                  options.auto_play = false;
+                  cout << "AutoPlay disabled due to Move Limit in Challenge." << endl;
+              }
+          }
+          // Truncate deck string to just the deck part
+          encoded_deck = encoded_deck.substr(0, first_dollar);
+          
+          cout << "Challenge Detected: " << options.challenge_code << endl;
+          cout << "Move Limit: " << options.move_limit << endl;
+      }
   }
 
   // Parse Reserve (first 8 chars -> 4 slots)
@@ -727,6 +829,17 @@ int main(int argc, char** argv) {
 
   if (!options.quiet) layout.Show();
 
+  // Adjust move limit for initial auto moves
+  int initial_moves_count = 0;
+  for (char c : initial_auto_moves) {
+      if (c == 'F') initial_moves_count++;
+  }
+  if (options.move_limit > 0) {
+      options.move_limit -= initial_moves_count;
+      if (options.move_limit < 0) options.move_limit = 0;
+      if (!options.quiet) cout << "Adjusted Move Limit (after " << initial_moves_count << " auto moves): " << options.move_limit << endl;
+  }
+
   vector<Move> moves;
 
   for (int i = 0; i < options.num_beams; ++i)
@@ -864,6 +977,11 @@ int main(int argc, char** argv) {
 
           // Check for Auto Moves triggered by this move
           encoded_solution_string += CaptureAutoMoves(current_layout);
+          
+          // Check if challenge is met
+          if (options.challenge_code != "00" && CheckChallenge(&current_layout, options.challenge_code)) {
+              break;
+          }
       }
       
       cout << "\nEncoded deck configuration\n" << deck_encoded_str << "\n\n";
@@ -906,6 +1024,7 @@ int main(int argc, char** argv) {
       printf("-------------------------\n");
   }
 
+  cout << "Solver finished successfully." << endl;
   return 0;
 }
 
