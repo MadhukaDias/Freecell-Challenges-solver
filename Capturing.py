@@ -39,6 +39,11 @@ NAME_TO_SUIT = {
     'Hearts': 'h', 'Clubs': 'c', 'Diamonds': 'd', 'Spades': 's'
 }
 
+NAME_TO_RANK_PLURAL = {
+    'Aces': 1, 'Twos': 2, 'Threes': 3, 'Fours': 4, 'Fives': 5, 'Sixes': 6,
+    'Sevens': 7, 'Eights': 8, 'Nines': 9, 'Tens': 10, 'Jacks': 11, 'Queens': 12, 'Kings': 13
+}
+
 # Map Data to String Code (Output to Solver)
 # 1->'a', 10->'t', 13->'k'
 RANK_TO_CODE = {
@@ -69,11 +74,173 @@ def get_sorted_children(control):
     children.sort(key=lambda c: c.BoundingRectangle.left)
     return children
 
+def scrape_challenge_info(window):
+    challenge_code = "00"
+    moves_limit = "0"
+    
+    # 1. Search for Moves Limit
+    # Look for text "Moves: X"
+    moves_el = window.Control(RegexName=r"Moves: \d+", searchDepth=10)
+    if moves_el.Exists(0, 0):
+        m = re.search(r"Moves: (\d+)", moves_el.Name)
+        if m:
+            moves_limit = m.group(1)
+            
+    # 2. Search for Challenge Text
+    # Try finding "Sixes cleared" or similar text directly
+    # Based on UI dump: TextControl: 'Sixes cleared', TextControl: '0/2'
+    
+    # Strategy: Find the text control that contains "cleared" or "Clear"
+    # Note: The count might be in a separate control (sibling) or same control.
+    
+    # Try finding specific plural text first (e.g. "Sixes cleared")
+    # This is more robust than generic "cleared" search which might miss if "Sixes" is separate?
+    # Actually, UI dump says: TextControl: 'Sixes cleared'
+    
+    # FIX: Use a broader search for the element, then check Name
+    # Sometimes RegexName doesn't match partial text if not configured right, or multiple controls match.
+    # We iterate through potential matches.
+    
+    # Try to find ANY control with "cleared" or "Clear" in the name
+    # We use GetChildren/Walk or just a very broad search
+    
+    found_challenge = False
+    
+    # Try specific patterns first
+    patterns = [
+        r".*cleared.*",
+        r".*Clear.*",
+        r".*Solve.*"
+    ]
+    
+    for pattern in patterns:
+        if found_challenge: break
+        
+        # Find ALL matching controls (not just the first one)
+        # uiautomation doesn't have FindAll easily accessible on WindowControl without a loop or GetChildren
+        # But we can try to find the first one and see if it works.
+        
+        challenge_el = window.Control(RegexName=pattern, searchDepth=15)
+        if challenge_el.Exists(0, 0):
+            text = challenge_el.Name
+            
+            # Case A: Specific Card "Clear 10 of Clubs"
+            match_specific = re.search(r"Clear (Ace|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten|Jack|Queen|King|\d+) of (Hearts|Clubs|Diamonds|Spades)", text, re.IGNORECASE)
+            if match_specific:
+                rank_str = match_specific.group(1)
+                suit_str = match_specific.group(2)
+                
+                if rank_str.isdigit():
+                    r_int = int(rank_str)
+                else:
+                    r_int = NAME_TO_RANK.get(rank_str.capitalize(), 0)
+                    
+                s_char = NAME_TO_SUIT.get(suit_str.capitalize(), 'h')
+                if r_int > 0:
+                    challenge_code = f"{RANK_TO_CODE[r_int]}{s_char}"
+                    found_challenge = True
+                    break
+
+            # Case C: "Clear the [Rank][Symbol]" (e.g. "Clear the J󰀁")
+            match_symbol = re.search(r"Clear the ([A-Z0-9]+)\s*(.)", text, re.IGNORECASE)
+            if match_symbol:
+                rank_str = match_symbol.group(1)
+                suit_char = match_symbol.group(2)
+                
+                # Parse Rank
+                if rank_str.isdigit():
+                    r_int = int(rank_str)
+                else:
+                    rank_map = {'A':1, 'J':11, 'Q':12, 'K':13}
+                    r_int = rank_map.get(rank_str.upper(), 0)
+                
+                # Parse Suit (Special Char)
+                s_char = 'x'
+                ord_val = ord(suit_char)
+                
+                # Mapping based on observation and standard private use areas
+                if suit_char == '󰀁' or ord_val == 0xF0001:
+                    s_char = 'c'
+                elif suit_char == '󰀂' or ord_val == 0xF0002:
+                    s_char = 'd'
+                elif suit_char == '󰀃' or ord_val == 0xF0003:
+                    s_char = 'h'
+                elif suit_char == '󰀄' or ord_val == 0xF0004:
+                    s_char = 's'
+                
+                if r_int > 0 and s_char != 'x':
+                    challenge_code = f"{RANK_TO_CODE[r_int]}{s_char}"
+                    found_challenge = True
+                    break
+
+            # Case B: "Sixes cleared" (Count might be in sibling)
+            # UI Dump shows: TextControl: 'Sixes cleared', TextControl: '0/2'
+            match_plural = re.search(r"(Aces|Twos|Threes|Fours|Fives|Sixes|Sevens|Eights|Nines|Tens|Jacks|Queens|Kings) cleared", text, re.IGNORECASE)
+            if match_plural:
+                rank_plural = match_plural.group(1)
+                
+                # Try to find the count in the NEXT sibling
+                try:
+                    parent = challenge_el.GetParentControl()
+                    siblings = parent.GetChildren()
+                    
+                    my_idx = -1
+                    for i, sib in enumerate(siblings):
+                        # Use RuntimeId to be sure it's the same element
+                        if sib.GetRuntimeId() == challenge_el.GetRuntimeId():
+                            my_idx = i
+                            break
+                    
+                    if my_idx != -1 and my_idx + 1 < len(siblings):
+                        next_sib = siblings[my_idx+1]
+                        # Look for "0/2" pattern
+                        m_count = re.search(r"\d+/(\d+)", next_sib.Name)
+                        if m_count:
+                            count = m_count.group(1)
+                            r_int = NAME_TO_RANK_PLURAL.get(rank_plural.capitalize(), 0)
+                            if r_int > 0:
+                                challenge_code = f"{RANK_TO_CODE[r_int]}{count}"
+                                found_challenge = True
+                                break
+                except Exception as e:
+                    print(f"Debug: Error finding sibling count: {e}")
+                
+                if found_challenge: break
+                
+                # Fallback: Check if count is in the SAME text (e.g. "Sixes cleared 0/2")
+                m_inline = re.search(r"cleared \d+/(\d+)", text, re.IGNORECASE)
+                if m_inline:
+                    count = m_inline.group(1)
+                    r_int = NAME_TO_RANK_PLURAL.get(rank_plural.capitalize(), 0)
+                    if r_int > 0:
+                        challenge_code = f"{RANK_TO_CODE[r_int]}{count}"
+                        found_challenge = True
+                        break
+
+            # Case C: "Clear 4 Kings"
+            match_count = re.search(r"Clear (\d+) (Aces|Twos|Threes|Fours|Fives|Sixes|Sevens|Eights|Nines|Tens|Jacks|Queens|Kings)", text, re.IGNORECASE)
+            if match_count:
+                count = match_count.group(1)
+                rank_plural = match_count.group(2)
+                
+                r_int = NAME_TO_RANK_PLURAL.get(rank_plural.capitalize(), 0)
+                if r_int > 0:
+                    challenge_code = f"{RANK_TO_CODE[r_int]}{count}"
+                    found_challenge = True
+                    break
+
+    return challenge_code, moves_limit
+
+    return challenge_code, moves_limit
+
 def scrape_game_state():
     """Scrapes the window and returns a raw dictionary of data"""
     window = auto.WindowControl(searchDepth=1, RegexName=".*Solitaire.*")
     if not window.Exists(0, 1):
         return None
+
+    # Scrape Challenge Info
+    challenge_code, moves_limit = scrape_challenge_info(window)
 
     # Connect to Groups
     tableau_group = window.GroupControl(AutomationId="Group_Tableau")
@@ -83,7 +250,9 @@ def scrape_game_state():
     state = {
         "freecells": [],
         "foundation": [],
-        "tableau": []
+        "tableau": [],
+        "challenge": challenge_code,
+        "moves": moves_limit
     }
 
     # 1. READ FREECELLS (4 slots)
@@ -168,7 +337,10 @@ def generate_encoded_string(state):
             for card in column:
                 tab_str += encode_card(card)
 
-    return fc_str + fo_str + tab_str
+    # 4. Append Challenge Info
+    challenge_str = f"${state.get('challenge', '00')}${state.get('moves', '0')}"
+
+    return fc_str + fo_str + tab_str + challenge_str
 
 # --- 5. OVERLAY LOGIC (FLET) ---
 
@@ -821,6 +993,8 @@ def main():
         print(f"\nCaptured State:")
         print(encoded_string)
         
+        return # Stop here to verify string
+
         # 3. Call Solver
         print("\nRunning Solver...")
         try:

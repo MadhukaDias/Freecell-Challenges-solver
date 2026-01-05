@@ -1,0 +1,44 @@
+the deck configuration is like this: 0000000000000000i8htd4sjs4d5dtsii4c5c6c5s8c9dkhiii7s1djd2cks1h4hivqc8s9h7dth7htcv6s3cqh2djh5hvikd1s3s6h9s6dvii7c1c2h9ckc2sviiiqd8d3dqs3hjc
+
+When it comes to specify the challenge we have other than solve the deck like:
+Clear a specific card or,
+Clear 1 or more than one card from the same number (1,2,3,...,j,q,k)
+
+Ex: Clear the King of Hearts, Clear the 7 of spades, Clear 3 Nines, Clear 4 Kings
+
+And those challenges are with limited moves sometimes. Let's say we want to clear a specific card within 80 moves.
+
+To get those information we need to edit the encoded string.
+
+Use the separator '$' in the string like this.
+
+encoded string: <deck configuration>$<challenge>$<number of moves>
+
+deck configuration is already done.
+
+In challenges, Let's the challenge is clear King of Hearts
+So the string is "kh"
+Let's say the challenge is clear 4 Nines
+So the string is "94"
+
+The first character says what is the number of the card (1,2,3,...,j,q,k)
+Second character says;
+    If it is a number, then we have to clear those number of cards from that type of card
+    If it is a character (c,s,h,d), then we have to clear that specific card (Ex: kh, 9d, 1c)
+
+If there is no specific challenge, the string will be "00" and which means solve the deck.
+
+After that we want to identify the number of moves. The next string part will normaly a number.
+If that number is 0, which means there is no limited moves.
+
+Ex: Clear 9 of hearts
+encoded string: 0000000000000000i8htd4sjs4d...jc$9h$0
+
+Ex: Clear 2 Sevens
+Encoded string: 0000000000000000i8htd4sjs4d...jc$72$0
+
+Ex: Clear 7 of Diamonds no more than 76 moves
+Encoded string: 0000000000000000i8htd4sjs4d...jc$7d$76
+
+Ex: Clear 3 Kings no more than 65 moves
+Encoded string: 0000000000000000i8htd4sjs4d...jc$k3$65
