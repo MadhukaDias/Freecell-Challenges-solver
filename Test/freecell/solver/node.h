@@ -21,7 +21,7 @@ using namespace std;
 
 static constexpr int kTotalCards = 52;
 static constexpr int kMinMoves = 0;
-static constexpr int kMaxMoves = 128;
+static constexpr int kMaxMoves = 2000;
 
 class Node;
 
@@ -480,7 +480,35 @@ class Node {
       color_diff = abs(foundation_[SPADE].size() - foundation_[HEART].size() -
                        foundation_[DIAMOND].size() + foundation_[CLUB].size());
     }
-    return auto_plays + moves_estimated_ + cards_unsorted_ + reserve_.size() + color_diff;
+
+    // Challenge Bias Heuristic
+    int challenge_bias = 0;
+    if (options.challenge_code != "00" && options.challenge_code.length() >= 2) {
+        // Parse Code to get target suit
+        char rank_char = options.challenge_code[0];
+        char suit_char = options.challenge_code[1];
+        
+        // Simple heuristic: Favor the suit we care about.
+        if (options.challenge_code.length() == 2 && isalpha(suit_char)) {
+             int target_suit = -1;
+             if (suit_char == 'h') target_suit = 0;
+             else if (suit_char == 'c') target_suit = 1;
+             else if (suit_char == 'd') target_suit = 2;
+             else if (suit_char == 's') target_suit = 3;
+
+             if (target_suit != -1) {
+                 int rank_reached = foundation_[target_suit].size();
+                 if (rank_reached > 0) {
+                     // Strong bias to prioritize target suit within move limit
+                     challenge_bias = rank_reached * 40; 
+                 }
+             }
+        }
+    }
+
+    // Offset of 600 to prevent negative values when subtracting large bias
+    int raw_cost = auto_plays + moves_estimated_ + cards_unsorted_ + reserve_.size() + color_diff + 600 - challenge_bias;
+    return raw_cost > 0 ? raw_cost : 0;
   }
   int cards_unsorted() const { return cards_unsorted_; }
 

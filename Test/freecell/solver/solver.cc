@@ -227,23 +227,36 @@ bool CheckChallenge(const Node* node, const string& code) {
 Node* Beam::ProcessNewNodes(List<Node> new_nodes, Bucket* new_level) {
   ScopedNode solution(&pool_);
   for (auto* new_node : new_nodes) {
-    // Check Move Limit
-    if (options.move_limit > 0 && new_node->moves_performed() > options.move_limit) {
-        pool_.Delete(new_node);
-        continue;
+    
+    // 1. Check Move Limit First
+    if (options.move_limit > 0) {
+        if (new_node->moves_performed() > options.move_limit) {
+            pool_.Delete(new_node);
+            continue; 
+        }
     }
 
+    // 2. Optimization: Prune if already worse than known solution
     if (new_node->min_total_moves() >= upperbound_ ||
         new_node->bin() < new_level->lowerbound()) {
       pool_.Delete(new_node);
       continue;
     }
     
-    if (CheckChallenge(new_node, options.challenge_code) &&
-        new_node->min_total_moves() < upperbound_) {
-      solution.reset(new_node);
-      upperbound_ = solution->min_total_moves();
-      continue;
+    // 3. Check Challenge Condition
+    if (options.challenge_code != "00") {
+        if (CheckChallenge(new_node, options.challenge_code) && new_node->min_total_moves() < upperbound_) {
+            solution.reset(new_node);
+            upperbound_ = solution->min_total_moves();
+            continue;
+        }
+    } else {
+        // Standard full solve check
+         if (new_node->cards_unsorted() == 0 && new_node->min_total_moves() < upperbound_) {
+             solution.reset(new_node);
+             upperbound_ = solution->min_total_moves();
+             continue;
+         }
     }
 
     if ((new_level->size() == beam_size_ &&
