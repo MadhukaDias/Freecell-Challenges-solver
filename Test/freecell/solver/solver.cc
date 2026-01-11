@@ -170,55 +170,60 @@ Node* Beam::CreateNewLevel(const Bucket& cur_level, Bucket* new_level) {
 }
 
 bool CheckChallenge(const Node* node, const string& code) {
-    // cout << "Checking challenge: " << code << endl;
     if (code == "00") return node->cards_unsorted() == 0;
     
-    // Case 1: Specific Card (e.g., "jc" -> Jack of Clubs)
-    if (code.length() == 2 && isalpha(code[1])) {
+    if (code.length() == 2) {
         char rank_char = code[0];
-        char suit_char = code[1];
+        char type_char = code[1];
         
-        int suit = -1;
-        if (suit_char == 'c') suit = CLUB;
-        else if (suit_char == 'd') suit = DIAMOND;
-        else if (suit_char == 'h') suit = HEART;
-        else if (suit_char == 's') suit = SPADE;
-        
-        if (suit == -1) return false; 
-        
+        // Parse Rank
         int rank = -1;
         if (isdigit(rank_char)) {
             rank = rank_char - '0';
         } else {
-            if (rank_char == 't') rank = 10;
-            else if (rank_char == 'j') rank = 11;
-            else if (rank_char == 'q') rank = 12;
-            else if (rank_char == 'k') rank = 13;
-            else if (rank_char == 'a') rank = 1;
+            char lower_r = tolower(rank_char);
+            if (lower_r == 't') rank = 10;
+            else if (lower_r == 'j') rank = 11;
+            else if (lower_r == 'q') rank = 12;
+            else if (lower_r == 'k') rank = 13;
+            else if (lower_r == 'a') rank = 1;
         }
         
-        if (rank > 0) rank -= 1; // Convert 1-based to 0-based
-        
-        bool has = node->GetFoundation(suit).Has(Card(suit, rank));
-        // cout << "Checking " << code << " Suit: " << suit << " Rank: " << rank << " FSize: " << node->GetFoundation(suit).size() << " Has: " << has << endl;
-        if (has) cout << "Challenge Met: " << code << endl;
-        return has;
-    }
-    
-    // Case 2: Count (e.g., "62" -> Two Sixes)
-    if (code.length() == 2 && isdigit(code[0]) && isdigit(code[1])) {
-        int rank_val = code[0] - '0'; 
-        int count_req = code[1] - '0'; 
-        
-        int target_rank = rank_val - 1;
-        
-        int count = 0;
-        for(int s=0; s<4; ++s) {
-            if (node->GetFoundation(s).Has(Card(s, target_rank))) {
-                count++;
+        if (rank > 0) {
+            int target_rank0 = rank - 1; // 0-based
+
+            // Case 1: Specific Suit (e.g. 'kd' -> King Diamonds)
+            if (isalpha(type_char)) {
+                int suit = -1;
+                char s = tolower(type_char);
+                if (s == 'c') suit = CLUB;
+                else if (s == 'd') suit = DIAMOND;
+                else if (s == 'h') suit = HEART;
+                else if (s == 's') suit = SPADE;
+                
+                if (suit != -1) {
+                    bool has = node->GetFoundation(suit).Has(Card(suit, target_rank0));
+                    if (has) cout << "Challenge Met: " << code << endl;
+                    return has;
+                }
+            } 
+            // Case 2: Count (e.g. 'k4' -> 4 Kings)
+            else if (isdigit(type_char)) {
+                int count_req = type_char - '0';
+                int current_count = 0;
+                for(int s=0; s<4; ++s) {
+                    // Check if foundation size > target_rank0 means it contains 0..target_rank0
+                    if (node->GetFoundation(s).size() > target_rank0) {
+                        current_count++;
+                    }
+                }
+                if (current_count >= count_req) {
+                     cout << "Challenge Met: " << code << " (" << current_count << "/" << count_req << ")" << endl;
+                     return true;
+                }
+                return false;
             }
         }
-        return count >= count_req;
     }
     
     return false;
@@ -858,16 +863,42 @@ int main(int argc, char** argv) {
         new Beam(options.seed, options.beam_size, i, options.num_beams));
 
   string solution_str;
-  if (options.num_beams == 1) {
-      solution_str = beams[0]->Solve(layout);
-  } else {
-      vector<std::unique_ptr<std::thread>> threads;
-      for (int i = 0; i < options.num_beams; ++i)
-        threads.emplace_back(new std::thread(
-            std::bind(&Beam::Solve, beams[i].get(), layout)));
-      for (int i = 0; i < options.num_beams; ++i) threads[i]->join();
-      // Note: In multi-threaded mode, we'd need to capture the solution from the winning thread.
-      // For this sample, we assume single thread.
+  int current_beam_size = options.beam_size;
+  int retry_count = 0;
+  
+  while (true) {
+      if (options.num_beams == 1) {
+          beams[0] = std::unique_ptr<Beam>(new Beam(options.seed, current_beam_size, 0, 1));
+          solution_str = beams[0]->Solve(layout);
+      } else {
+        // Multi-threaded logic (unchanged for now)
+          vector<std::unique_ptr<std::thread>> threads;
+          // Re-create beams with new size
+          beams.clear();
+          for (int i = 0; i < options.num_beams; ++i)
+                beams.emplace_back(new Beam(options.seed, current_beam_size, i, options.num_beams));
+          
+          for (int i = 0; i < options.num_beams; ++i)
+            threads.emplace_back(new std::thread(
+                static_cast<std::string(Beam::*)(const Node&)>(&Beam::Solve), beams[i].get(), layout));
+
+          for (int i = 0; i < options.num_beams; ++i) threads[i]->join();
+          // solution_str retrieval for multi-thread is complex in this structure.
+          // For now, if num_beams > 1, we don't support retry logic seamlessly without refactoring.
+          // Fallback to simpler single-thread retry logic or just warning.
+          cout << "Warning: Iterative Beam Width only fully supported for single beam." << endl;
+      }
+      
+      if (!solution_str.empty()) break;
+      
+      // If we failed and have a move limit/challenge, retry with wider beam
+      if (retry_count < 3 && (options.move_limit > 0 || options.challenge_code != "00")) {
+          current_beam_size *= 2; 
+          cout << "Search failed. Retrying with Beam Width: " << current_beam_size << endl;
+          retry_count++;
+      } else {
+          break; 
+      }
   }
 
   if (!solution_str.empty()) {

@@ -21,7 +21,7 @@ using namespace std;
 
 static constexpr int kTotalCards = 52;
 static constexpr int kMinMoves = 0;
-static constexpr int kMaxMoves = 2000;
+static constexpr int kMaxMoves = 5000;
 
 class Node;
 
@@ -483,31 +483,92 @@ class Node {
 
     // Challenge Bias Heuristic
     int challenge_bias = 0;
-    if (options.challenge_code != "00" && options.challenge_code.length() >= 2) {
-        // Parse Code to get target suit
+    if (options.challenge_code != "00" && options.challenge_code.length() == 2) {
         char rank_char = options.challenge_code[0];
-        char suit_char = options.challenge_code[1];
+        char type_char = options.challenge_code[1];
         
-        // Simple heuristic: Favor the suit we care about.
-        if (options.challenge_code.length() == 2 && isalpha(suit_char)) {
-             int target_suit = -1;
-             if (suit_char == 'h') target_suit = 0;
-             else if (suit_char == 'c') target_suit = 1;
-             else if (suit_char == 'd') target_suit = 2;
-             else if (suit_char == 's') target_suit = 3;
+        // Parse Rank
+        int target_rank = -1;
+        if (isdigit(rank_char)) {
+            target_rank = rank_char - '0';
+        } else {
+            char r = tolower(rank_char);
+            if (r == 't') target_rank = 10;
+            else if (r == 'j') target_rank = 11;
+            else if (r == 'q') target_rank = 12;
+            else if (r == 'k') target_rank = 13;
+            else if (r == 'a') target_rank = 1;
+        }
 
-             if (target_suit != -1) {
-                 int rank_reached = foundation_[target_suit].size();
-                 if (rank_reached > 0) {
-                     // Strong bias to prioritize target suit within move limit
-                     challenge_bias = rank_reached * 40; 
+        if (target_rank > 0) {
+            // Case 1: Specific Suit
+            if (isalpha(type_char)) {
+                 int target_suit = -1;
+                 char s = tolower(type_char);
+                 if (s == 'h') target_suit = 0;
+                 else if (s == 'c') target_suit = 1;
+                 else if (s == 'd') target_suit = 2;
+                 else if (s == 's') target_suit = 3;
+
+                 if (target_suit != -1) {
+                     int rank_reached = foundation_[target_suit].size();
+                     if (rank_reached > target_rank) rank_reached = target_rank;
+                     
+                     int primary_weight = 40;
+                     int secondary_weight = 10;
+                     int other_ranks = 0;
+                     for(int s=0; s<4; ++s) {
+                         if (s != target_suit) other_ranks += foundation_[s].size();
+                     }
+
+                     if (rank_reached > 0) {
+                        challenge_bias = (rank_reached * primary_weight) + (other_ranks * secondary_weight);
+                     }
                  }
-             }
+            }
+            // Case 2: Count of Cards (e.g. 'k2' -> 2 Kings)
+            else if (isdigit(type_char)) {
+                int count_req = type_char - '0';
+                
+                // Get all foundation sizes
+                int sizes[4];
+                for(int i=0; i<4; ++i) {
+                     int sz = foundation_[i].size();
+                     if (sz > target_rank) sz = target_rank; // Cap contribution at target
+                     sizes[i] = sz;
+                }
+                
+                // Sort descending (simple bubble sort for 4 elements)
+                for(int i=0; i<3; ++i) {
+                    for(int j=0; j<3-i; ++j) {
+                        if (sizes[j] < sizes[j+1]) {
+                            int temp = sizes[j];
+                            sizes[j] = sizes[j+1];
+                            sizes[j+1] = temp;
+                        }
+                    }
+                }
+                
+                 // Sum top 'count_req' sizes for primary bias
+                int total_progress = 0;
+                int primary_weight = 40;
+                int secondary_weight = 10;
+                
+                for(int i=0; i<4; ++i) {
+                    if (i < count_req) {
+                        total_progress += sizes[i] * primary_weight;
+                    } else {
+                        total_progress += sizes[i] * secondary_weight;
+                    }
+                }
+                
+                challenge_bias = total_progress;
+            }
         }
     }
 
-    // Offset of 600 to prevent negative values when subtracting large bias
-    int raw_cost = auto_plays + moves_estimated_ + cards_unsorted_ + reserve_.size() + color_diff + 600 - challenge_bias;
+    // Offset of 2000 to prevent negative values
+    int raw_cost = auto_plays + moves_estimated_ + cards_unsorted_ + reserve_.size() + color_diff + 2000 - challenge_bias;
     return raw_cost > 0 ? raw_cost : 0;
   }
   int cards_unsorted() const { return cards_unsorted_; }
