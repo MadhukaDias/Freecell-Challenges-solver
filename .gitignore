@@ -25,9 +25,9 @@ Thumbs.db
 # Editor directories
 .vscode/
 .idea/
+.Solutions/
 
 # Model training output
-runs/
 __pycache__/
 *.pt
 My-First-Project-3/

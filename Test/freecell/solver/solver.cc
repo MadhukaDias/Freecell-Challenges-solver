@@ -863,42 +863,16 @@ int main(int argc, char** argv) {
         new Beam(options.seed, options.beam_size, i, options.num_beams));
 
   string solution_str;
-  int current_beam_size = options.beam_size;
-  int retry_count = 0;
-  
-  while (true) {
-      if (options.num_beams == 1) {
-          beams[0] = std::unique_ptr<Beam>(new Beam(options.seed, current_beam_size, 0, 1));
-          solution_str = beams[0]->Solve(layout);
-      } else {
-        // Multi-threaded logic (unchanged for now)
-          vector<std::unique_ptr<std::thread>> threads;
-          // Re-create beams with new size
-          beams.clear();
-          for (int i = 0; i < options.num_beams; ++i)
-                beams.emplace_back(new Beam(options.seed, current_beam_size, i, options.num_beams));
-          
-          for (int i = 0; i < options.num_beams; ++i)
-            threads.emplace_back(new std::thread(
-                static_cast<std::string(Beam::*)(const Node&)>(&Beam::Solve), beams[i].get(), layout));
-
-          for (int i = 0; i < options.num_beams; ++i) threads[i]->join();
-          // solution_str retrieval for multi-thread is complex in this structure.
-          // For now, if num_beams > 1, we don't support retry logic seamlessly without refactoring.
-          // Fallback to simpler single-thread retry logic or just warning.
-          cout << "Warning: Iterative Beam Width only fully supported for single beam." << endl;
-      }
-      
-      if (!solution_str.empty()) break;
-      
-      // If we failed and have a move limit/challenge, retry with wider beam
-      if (retry_count < 3 && (options.move_limit > 0 || options.challenge_code != "00")) {
-          current_beam_size *= 2; 
-          cout << "Search failed. Retrying with Beam Width: " << current_beam_size << endl;
-          retry_count++;
-      } else {
-          break; 
-      }
+  if (options.num_beams == 1) {
+      solution_str = beams[0]->Solve(layout);
+  } else {
+      vector<std::unique_ptr<std::thread>> threads;
+      for (int i = 0; i < options.num_beams; ++i)
+        threads.emplace_back(new std::thread(
+            std::bind(&Beam::Solve, beams[i].get(), layout)));
+      for (int i = 0; i < options.num_beams; ++i) threads[i]->join();
+      // Note: In multi-threaded mode, we'd need to capture the solution from the winning thread.
+      // For this sample, we assume single thread.
   }
 
   if (!solution_str.empty()) {
