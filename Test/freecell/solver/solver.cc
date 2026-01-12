@@ -9,7 +9,6 @@
 using namespace std;
 
 #include "bucket.h"
-#include "deals.h"
 #include "hash_table.h"
 #include "node.h"
 #include "options.h"
