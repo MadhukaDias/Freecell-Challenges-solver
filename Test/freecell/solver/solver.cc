@@ -653,6 +653,269 @@ string CaptureAutoMoves(Node& node) {
     return encoded_moves;
 }
 
+#include <queue>
+#include <unordered_set>
+#include <tuple>
+#include <iomanip>
+
+class AStarSolver {
+public:
+    string Solve(const Node& layout, string challenge_code) {
+        if (challenge_code == "00") return "";
+        
+        cout << "DEBUG: AStarSolver::Solve invoked for Challenge: " << challenge_code << endl;
+        
+        // 1. Parse Targets
+        vector<Card> all_potential_targets = ParseTargets(challenge_code);
+        if (all_potential_targets.empty()) {
+            cout << "Error: Could not parse targets." << endl;
+            return "";
+        }
+        
+        // 2. Setup A*
+        Pool pool; 
+        // Use hash for closed set to save memory (size_t is 4 or 8 bytes vs string 100+ bytes)
+        std::unordered_set<size_t> closed_set;
+        std::priority_queue<State, vector<State>, CompareState> open_set;
+        
+        Node* root = pool.New(layout);
+        int h = CalculateHeuristic(root, all_potential_targets);
+        
+        open_set.push(State(root, 0, h, 0));
+        size_t root_hash = std::hash<string>{}(SerializeState(root));
+        closed_set.insert(root_hash);
+        
+        int nodes_expanded = 0;
+        int id_counter = 0;
+
+        // Determine target count needed
+        int required_count = all_potential_targets.size();
+        if (isdigit(challenge_code[1])) {
+            required_count = challenge_code[1] - '0';
+        }
+
+        while (!open_set.empty()) {
+            State current = open_set.top();
+            open_set.pop();
+            
+            Node* node = current.GetNode();
+
+            // 3. Check Goal
+            int met_count = 0;
+            if (all_potential_targets.size() == 4 && required_count < 4) {
+                 for(const auto& t : all_potential_targets) {
+                     if (node->GetFoundation(t.suit()).Has(t)) met_count++;
+                 }
+            } else {
+                 met_count = 0;
+                 for(const auto& t : all_potential_targets) {
+                     if (node->GetFoundation(t.suit()).Has(t)) met_count++;
+                 }
+                 if (met_count == all_potential_targets.size()) met_count = required_count; 
+                 else met_count = 0; 
+            }
+
+            if (met_count >= required_count) {
+                 cout << "A* Solution Found! Nodes expanded: " << nodes_expanded << endl;
+                 cout << "Solution Length: " << node->moves_performed() << endl;
+                 
+                 string code;
+                 {
+                     // Reconstruct path
+                     ScopedNode temp_node(&pool, pool.New(layout));
+                     Node::CompressedMoves::Reader reader(node->moves());
+                     for (int i = 0; i < node->moves_performed(); ++i) {
+                        auto new_nodes = temp_node->Expand(&pool).ToVector();
+                        int move_index = reader.Read(new_nodes.size());
+                        auto picked_node = new_nodes[move_index];
+                        for (auto* n : new_nodes) if (n != picked_node) pool.Delete(n);
+                        temp_node.reset(picked_node);
+                        code += temp_node->last_move().Encode();
+                     }
+                 }
+                 return code;
+            }
+            
+            // 4. Expand
+            nodes_expanded++;
+            if (nodes_expanded % 100000 == 0) cout << "Expanded: " << nodes_expanded << " f=" << current.f() << " g=" << current.GetG() << endl;
+            
+            auto children = node->Expand(&pool);
+            for (Node* child : children) {
+                // Optimize: Hash state immediately
+                string child_str = SerializeState(child);
+                size_t child_hash = std::hash<string>{}(child_str);
+
+                if (closed_set.find(child_hash) == closed_set.end()) {
+                    closed_set.insert(child_hash);
+                    
+                    int child_h = 0;
+                    if (all_potential_targets.size() == 4 && required_count < 4) {
+                         vector<int> costs;
+                         for(const auto& t : all_potential_targets) costs.push_back(GetRecursiveHeuristic(child, t));
+                         std::sort(costs.begin(), costs.end());
+                         for(int i=0; i<required_count; ++i) child_h += costs[i];
+                    } else {
+                         child_h = CalculateHeuristic(child, all_potential_targets);
+                    }
+
+                    open_set.push(State(child, current.GetG() + 1, child_h, ++id_counter));
+                } else {
+                    pool.Delete(child);
+                }
+            }
+        }
+
+        cout << "A* Search failed to find a solution." << endl;
+        return "";
+    }
+
+private:
+   class State {
+    public:
+        State(Node* n, int g_val, int h_val, int id_val) 
+            : node_(n), g_(g_val), h_(h_val), id_(id_val) {}
+
+        int f() const { return g_ + h_; }
+        int GetG() const { return g_; }
+        Node* GetNode() const { return node_; }
+        int GetId() const { return id_; }
+
+    private:
+        Node* node_;
+        int g_;
+        int h_;
+        int id_; 
+    };
+
+    struct CompareState {
+        bool operator()(const State& a, const State& b) {
+            if (a.f() != b.f()) return a.f() > b.f();
+            return a.GetId() > b.GetId(); 
+        }
+    };
+
+    // Serialize state for Closed Set
+    string SerializeState(const Node* node) {
+        string s = "";
+        // Foundations (only top matters)
+        for(int i=0; i<4; ++i) {
+            if (node->GetFoundation(i).empty()) s += "00";
+            else s += node->GetFoundation(i).Top(i).ToCleanString();
+        }
+        // Reserve 
+        vector<string> reserve_strs;
+        const auto& current_reserve = node->GetReserve();
+        for(int i=0; i<current_reserve.size(); ++i) {
+            reserve_strs.push_back(current_reserve[i].ToCleanString());
+        }
+        std::sort(reserve_strs.begin(), reserve_strs.end());
+        for(const auto& rs : reserve_strs) s += rs;
+
+        // Tableau
+        for(int i=0; i<8; ++i) {
+            s += "|";
+            const auto& t = node->GetTableau(i);
+            for(int j=0; j<t.size(); ++j) {
+                s += t.card(j).ToCleanString();
+            }
+        }
+        return s;
+    }
+
+    // Calculate Depth of a card in the layout
+    int GetCardDepth(const Node* node, Card target) {
+        // Check Reserve
+        const auto& current_reserve = node->GetReserve();
+        for(int i=0; i<current_reserve.size(); ++i) {
+            if (current_reserve[i] == target) return 0; // Accessible
+        }
+        
+        // Check Tableau
+        for(int i=0; i<8; ++i) {
+            const auto& t = node->GetTableau(i);
+            for(int j=0; j<t.size(); ++j) {
+                if (t.card(j) == target) {
+                    return t.size() - 1 - j;
+                }
+            }
+        }
+        
+        if (node->GetFoundation(target.suit()).Has(target)) return -1; // Done
+
+        return 1000;
+    }
+
+    int GetRecursiveHeuristic(const Node* node, Card target, int depth_limit = 13) {
+        if (depth_limit <= 0) return 0; 
+        
+        if (node->GetFoundation(target.suit()).Has(target)) return 0;
+
+        int current_depth = GetCardDepth(node, target);
+        if (current_depth == -1) return 0; // Already in foundation
+
+        int cost = current_depth;
+        
+        if (target.rank() > ACE) {
+            Card prereq(target.suit(), target.rank() - 1);
+            cost += GetRecursiveHeuristic(node, prereq, depth_limit - 1);
+        }
+        
+        return cost;
+    }
+
+    int CalculateHeuristic(const Node* node, const vector<Card>& targets) {
+        int total_h = 0;
+        for(const auto& t : targets) {
+            total_h += GetRecursiveHeuristic(node, t);
+        }
+        return total_h;
+    }
+
+    vector<Card> ParseTargets(string code) {
+       vector<Card> targets;
+       if (code.length() == 2) {
+            char rank_char = code[0];
+            char type_char = code[1];
+            
+            int rank = -1;
+            if (isdigit(rank_char)) {
+                // '1' -> Ace (0), '9' -> R9 (8)
+                int val = rank_char - '0';
+                if (val >= 1 && val <= 9) rank = val - 1;
+            } else {
+                char lower_r = tolower(rank_char);
+                if (lower_r == 'a') rank = 0; // Just in case 'a' is used for Ace
+                else if (lower_r == 't') rank = 9; // Ten
+                else if (lower_r == 'j') rank = 10;
+                else if (lower_r == 'q') rank = 11;
+                else if (lower_r == 'k') rank = 12;
+            }
+
+            if (rank != -1) {
+                 if (isalpha(type_char)) {
+                     int suit = -1;
+                     char s = tolower(type_char);
+                     if (s == 'c') suit = CLUB;
+                     else if (s == 'd') suit = DIAMOND;
+                     else if (s == 'h') suit = HEART;
+                     else if (s == 's') suit = SPADE;
+                     if (suit != -1) targets.emplace_back(suit, rank);
+                 }
+                 else if (isdigit(type_char)) {
+                     for(int s=0; s<4; ++s) targets.emplace_back(s, rank);
+                 }
+            }
+       }
+       return targets;
+    }
+};
+
+string SolveByAStar(const Node& layout) {
+    AStarSolver solver;
+    return solver.Solve(layout, options.challenge_code);
+}
+
 int main(int argc, char** argv) {
   // Hardcoded options for the sample
   options.seed = 2;
@@ -856,22 +1119,26 @@ int main(int argc, char** argv) {
   }
 
   vector<Move> moves;
-
-  for (int i = 0; i < options.num_beams; ++i)
-    beams.emplace_back(
-        new Beam(options.seed, options.beam_size, i, options.num_beams));
-
   string solution_str;
-  if (options.num_beams == 1) {
-      solution_str = beams[0]->Solve(layout);
-  } else {
-      vector<std::unique_ptr<std::thread>> threads;
+
+  if (options.challenge_code == "00") {
       for (int i = 0; i < options.num_beams; ++i)
-        threads.emplace_back(new std::thread(
-            std::bind(&Beam::Solve, beams[i].get(), layout)));
-      for (int i = 0; i < options.num_beams; ++i) threads[i]->join();
-      // Note: In multi-threaded mode, we'd need to capture the solution from the winning thread.
-      // For this sample, we assume single thread.
+        beams.emplace_back(
+            new Beam(options.seed, options.beam_size, i, options.num_beams));
+
+      if (options.num_beams == 1) {
+          solution_str = beams[0]->Solve(layout);
+      } else {
+          vector<std::unique_ptr<std::thread>> threads;
+          for (int i = 0; i < options.num_beams; ++i)
+            threads.emplace_back(new std::thread(
+                std::bind(&Beam::Solve, beams[i].get(), layout)));
+          for (int i = 0; i < options.num_beams; ++i) threads[i]->join();
+          // Note: In multi-threaded mode, we'd need to capture the solution from the winning thread.
+          // For this sample, we assume single thread.
+      }
+  } else {
+      solution_str = SolveByAStar(layout);
   }
 
   if (!solution_str.empty()) {
