@@ -106,11 +106,10 @@ class SolutionOverlay:
         page.window.ignore_mouse_events = True # Click-through
         
         # Create controls for Source and Dest
-        # We use AnimatedContainer for fade effects
+        # No animations for faster overlay
         self.src_box_outer = ft.Container(
             border=ft.Border.all(2, ft.Colors.ORANGE),
             border_radius=6,
-            animate_opacity=150,
             opacity=0,
             width=0, height=0,
             left=0, top=0,
@@ -119,7 +118,6 @@ class SolutionOverlay:
         self.src_box = ft.Container(
             border=ft.Border.all(3, ft.Colors.AMBER),
             border_radius=6,
-            animate_opacity=150,
             opacity=0,
             width=0, height=0,
             left=0, top=0,
@@ -141,7 +139,6 @@ class SolutionOverlay:
             left=0, top=0,
             width=0, height=0,
             opacity=0,
-            animate_opacity=150,
             border_radius=6,
             shadow=ft.BoxShadow(
                 spread_radius=-6,
@@ -419,6 +416,51 @@ class SolutionOverlay:
         while self.current_step_index < len(self.steps):
             step = self.steps[self.current_step_index]
             
+            # Hide overlay and wait for automoves to complete
+            if "Automove" in step or "Skipped" in step or "automove" in step or "skipped" in step:
+                print(f"Step {self.current_step_index + 1} Automove detected: {step}")
+                # Hide overlay immediately
+                self.src_box.opacity = 0
+                self.src_box_outer.opacity = 0
+                self.dest_box.opacity = 0
+                self.page.update()
+                
+                # Find all consecutive automoves to get the last one
+                last_automove_index = self.current_step_index
+                while last_automove_index + 1 < len(self.steps):
+                    next_step = self.steps[last_automove_index + 1]
+                    if "Automove" in next_step or "automove" in next_step:
+                        last_automove_index += 1
+                    else:
+                        break
+                
+                # Extract the last automove's card to monitor
+                last_automove_step = self.steps[last_automove_index]
+                card_match = re.search(r"Move (?:stack of (\d+) cards \()?([0-9TJQK][SHDC])\)?", last_automove_step)
+                
+                if card_match:
+                    last_card = card_match.group(2)
+                    print(f"Waiting for automove sequence to complete (last card: {last_card})...")
+                    
+                    # Wait until the last automove card reaches the foundation
+                    max_wait_time = 5.0  # Maximum 5 seconds to wait
+                    elapsed_time = 0
+                    check_interval = 0.05
+                    
+                    while elapsed_time < max_wait_time:
+                        if self.is_card_in_foundation(last_card):
+                            print(f"Automove sequence complete: {last_card} reached foundation")
+                            break
+                        await asyncio.sleep(check_interval)
+                        elapsed_time += check_interval
+                    
+                    if elapsed_time >= max_wait_time:
+                        print(f"Warning: Timeout waiting for {last_card} to reach foundation")
+                
+                # Advance past all automoves
+                self.current_step_index = last_automove_index + 1
+                continue
+            
             # Parse Step
             # Capture Source and Dest hints
             # Regex to capture stack size if present
@@ -578,8 +620,8 @@ class SolutionOverlay:
                     self.src_box_outer.opacity = 0
                     self.dest_box.opacity = 0
                     self.page.update()
-                    # Wait for fade out animation (150ms) to finish before moving to next step position
-                    await asyncio.sleep(0.1)
+                    # No animation delay needed
+                    await asyncio.sleep(0.02)
                     continue
 
                 # Update Source Box
@@ -651,7 +693,7 @@ class SolutionOverlay:
                     self.dest_box.opacity = 0
                 
                 self.page.update()
-                await asyncio.sleep(0.05) # Wait for fade in
+                # No fade in delay needed
 
             # If we successfully drew the step (or failed to find dest but didn't skip), break the loop to wait for next frame
             break

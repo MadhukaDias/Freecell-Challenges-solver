@@ -605,10 +605,16 @@ void DecodeAndShow(string solution_str, Node layout) {
             else if (dest_idx != -1) layout.ApplyTableauToTableau(src_idx, dest_idx);
         }
 
-        string step_str = "Step " + to_string(step++) + ": Move " + card_name + " from " + source_name + " to " + dest_name + on_card;
-        if (is_auto) {
+        string step_str;
+        if (step==1) {
+            step_str = "Step " + to_string(step++) + ": Move " + card_name + " from " + source_name + " to " + dest_name + on_card;
+            cout << step_str << endl;
+        }
+        else if (is_auto) {
+            step_str = "Step " + to_string(step++) + " (Automove): Move " + card_name + " from " + source_name + " to " + dest_name + on_card;
             cout << "\033[34m" << step_str << "\033[0m" << endl;
         } else {
+            step_str = "Step " + to_string(step++) + ": Move " + card_name + " from " + source_name + " to " + dest_name + on_card;
             cout << step_str << endl;
         }
     }
