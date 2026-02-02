@@ -19,7 +19,7 @@ def get_scale_factor():
         ctypes.windll.user32.ReleaseDC(0, hdc)
         return dpi / 96.0
     except:
-        return 1.0
+        return 0.5
 
 SCALE_FACTOR = get_scale_factor()
 
