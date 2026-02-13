@@ -25,9 +25,4 @@ Thumbs.db
 # Editor directories
 .vscode/
 .idea/
-Test/freecell/Solutions/
-
-# Model training output
-__pycache__/
-Test/freecell/Model/
-current_solution.txt
+*.txt

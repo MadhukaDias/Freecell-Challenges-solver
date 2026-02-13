@@ -19,7 +19,7 @@ def get_scale_factor():
         ctypes.windll.user32.ReleaseDC(0, hdc)
         return dpi / 96.0
     except:
-        return 0.5
+        return 1.25
 
 SCALE_FACTOR = get_scale_factor()
 
@@ -154,7 +154,7 @@ class SolutionOverlay:
         # Start the update loop
         while self.current_step_index < len(self.steps):
             await self.update_overlay()
-            await asyncio.sleep(0.05) # 20 FPS
+            await asyncio.sleep(0.02) # 20 FPS
         
         # Solved
         pass
@@ -213,7 +213,8 @@ class SolutionOverlay:
                     'J': 'Jack', 'Q': 'Queen', 'K': 'King'}
         suit_map = {'H': 'Hearts', 'C': 'Clubs', 'D': 'Diamonds', 'S': 'Spades'}
         
-        if len(card_name) < 2: return None
+        if len(card_name) < 2:
+            return None
         r_code = card_name[:-1].upper()
         s_code = card_name[-1].upper()
         
@@ -233,34 +234,40 @@ class SolutionOverlay:
                     # Search ONLY in this column
                     # Increased depth to 25 to ensure we find cards in deep stacks (nested or flat)
                     card_el = col.Control(RegexName=regex_name, searchDepth=25)
-                    if card_el.Exists(0, 0): return card_el.BoundingRectangle
+                    if card_el.Exists(0, 0):
+                        return card_el.BoundingRectangle
             except:
                 pass
             
             # Fallback: If not found in specific column, search entire Tableau group
             # This handles cases where the card might be in transit or index is off
             card_el = self.tableau_group.Control(RegexName=regex_name, searchDepth=25)
-            if card_el.Exists(0, 0): return card_el.BoundingRectangle
+            if card_el.Exists(0, 0):
+                return card_el.BoundingRectangle
         
         elif "Reserve" in location_hint:
             # Search ONLY in reserve slots
             # We can search the group, or iterate slots. Group is faster.
             card_el = self.freecell_group.Control(RegexName=regex_name, searchDepth=3)
-            if card_el.Exists(0, 0): return card_el.BoundingRectangle
+            if card_el.Exists(0, 0):
+                return card_el.BoundingRectangle
 
         # 2. Fallback: Optimized Group Search (Only if hint is empty)
         if not location_hint:
             # Tableau (Most likely)
             card_el = self.tableau_group.Control(RegexName=regex_name, searchDepth=5)
-            if card_el.Exists(0, 0): return card_el.BoundingRectangle
+            if card_el.Exists(0, 0):
+                return card_el.BoundingRectangle
             
             # Reserve
             card_el = self.freecell_group.Control(RegexName=regex_name, searchDepth=3)
-            if card_el.Exists(0, 0): return card_el.BoundingRectangle
+            if card_el.Exists(0, 0):
+                return card_el.BoundingRectangle
             
             # Foundation
             card_el = self.foundation_group.Control(RegexName=regex_name, searchDepth=3)
-            if card_el.Exists(0, 0): return card_el.BoundingRectangle
+            if card_el.Exists(0, 0):
+                return card_el.BoundingRectangle
 
         return None
 
@@ -299,7 +306,8 @@ class SolutionOverlay:
     def get_empty_slot_rect(self, location_type, index=None, suit=None, source_card_name=None):
         """Finds an empty slot or specific target card in Tableau, Reserve, or Foundation"""
         try:
-            if not self.window.Exists(0, 0): return None
+            if not self.window.Exists(0, 0):
+                return None
         except Exception:
             return None
         
@@ -331,38 +339,35 @@ class SolutionOverlay:
                         target_rank = src_rank + 1
                         is_black = s_code in ['S', 'C']
                         
-                        # 2. Search stack for the target card
-                        # We look for a card with Rank = target_rank and Color != is_black
+                        # 2. OPTIMIZED: Check if column is empty first (fast path)
                         children = stack.GetChildren()
-                        best_match = None
-                        best_top = -1
                         
-                        for child in children:
+                        if not children:
+                            # Empty column - return immediately
+                            return stack.BoundingRectangle
+                        
+                        # 3. OPTIMIZED: Only check bottom 3-5 cards (target is likely at bottom)
+                        # Reverse iterate from bottom (last children) for faster match
+                        search_count = min(5, len(children))
+                        start_idx = len(children) - search_count
+                        
+                        for i in range(len(children) - 1, start_idx - 1, -1):
+                            child = children[i]
                             val = parse_card_name(child.Name)
                             if val:
                                 r, s = val
                                 child_is_black = s.upper() in ['S', 'C']
                                 if r == target_rank and child_is_black != is_black:
-                                    # Handle duplicate ranks (e.g. 9S and 9C in same column)
-                                    # The valid target is always the one lowest in the stack (highest Y)
+                                    # Found valid target - return immediately
                                     try:
-                                        c_top = child.BoundingRectangle.top
-                                        if c_top > best_top:
-                                            best_match = child
-                                            best_top = c_top
+                                        return child.BoundingRectangle
                                     except:
                                         pass
                         
-                        if best_match:
-                            return best_match.BoundingRectangle
-                        
-                        # 3. If target card NOT found, assume move to empty column
-                        # (Even if column is not empty now, it means we moved the stack there)
+                        # 4. If target card NOT found in bottom cards, return column rect
                         return stack.BoundingRectangle
 
-                # Fallback: Just get the top card (last child)
-                children = stack.GetChildren()
-                if children: return children[-1].BoundingRectangle
+                # Fallback: Just return column rectangle (faster, no iteration needed)
                 return stack.BoundingRectangle
 
         elif location_type == "Reserve":
@@ -370,7 +375,8 @@ class SolutionOverlay:
             for slot in self.reserve_slots:
                 if "empty" in slot.Name.lower() or not slot.GetChildren():
                     return slot.BoundingRectangle
-            if self.reserve_slots: return self.reserve_slots[0].BoundingRectangle
+            if self.reserve_slots:
+                return self.reserve_slots[0].BoundingRectangle
                     
         elif location_type == "Foundation":
             # Use cached piles
@@ -381,7 +387,8 @@ class SolutionOverlay:
                     if idx < len(self.foundation_piles):
                         return self.foundation_piles[idx].BoundingRectangle
             
-            if self.foundation_piles: return self.foundation_piles[0].BoundingRectangle
+            if self.foundation_piles:
+                return self.foundation_piles[0].BoundingRectangle
             
         return None
 
@@ -445,7 +452,7 @@ class SolutionOverlay:
                     # Wait until the last automove card reaches the foundation
                     max_wait_time = 5.0  # Maximum 5 seconds to wait
                     elapsed_time = 0
-                    check_interval = 0.05
+                    check_interval = 0.02
                     
                     while elapsed_time < max_wait_time:
                         if self.is_card_in_foundation(last_card):
@@ -593,7 +600,6 @@ class SolutionOverlay:
                     if dest_rect:
                         # Horizontal: Center of source is within width of dest
                         h_aligned = dest_rect.left <= cx <= dest_rect.right
-                        
                         # Vertical: Source top should be roughly within the destination card's vertical range
                         # Case 1: Empty Column -> src.top ~= dest.top
                         # Case 2: Stacking -> src.top > dest.top (offset)
@@ -612,16 +618,13 @@ class SolutionOverlay:
                             if c_rect:
                                 if c_rect.left <= cx <= c_rect.right and c_rect.top <= cy:
                                     is_at_dest = True
-                
                 if is_at_dest:
                     print(f"Step {self.current_step_index + 1} Complete: {card_name} detected in destination.")
                     self.current_step_index += 1
                     self.src_box.opacity = 0
                     self.src_box_outer.opacity = 0
                     self.dest_box.opacity = 0
-                    self.page.update()
-                    # No animation delay needed
-                    await asyncio.sleep(0.02)
+                    self.page.update() # Brief pause to show completion before next step
                     continue
 
                 # Update Source Box
