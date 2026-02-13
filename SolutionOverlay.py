@@ -148,7 +148,30 @@ class SolutionOverlay:
             )
         )
         
-        self.stack = ft.Stack([self.dest_box, self.src_box, self.src_box_outer], expand=True)
+        # Undo button overlay
+        self.undo_box_outer = ft.Container(
+            border=ft.Border.all(2, ft.Colors.RED_900),
+            border_radius=6,
+            opacity=0,
+            width=0, height=0,
+            left=0, top=0,
+        )
+
+        self.undo_box = ft.Container(
+            border=ft.Border.all(3, ft.Colors.RED),
+            border_radius=6,
+            opacity=0,
+            width=0, height=0,
+            left=0, top=0,
+            shadow=ft.BoxShadow(
+                spread_radius=0,
+                blur_radius=25,
+                color=ft.Colors.RED,
+                blur_style=ft.BlurStyle.OUTER,
+            )
+        )
+        
+        self.stack = ft.Stack([self.dest_box, self.src_box, self.src_box_outer, self.undo_box, self.undo_box_outer], expand=True)
         page.add(self.stack)
         
         # Start the update loop
@@ -407,7 +430,67 @@ class SolutionOverlay:
             return self.tableau_group.BoundingRectangle
         return None
 
+    def update_undo_button_overlay(self):
+        """Updates the undo button overlay position and size."""
+        try:
+            # Find the undo button: ListItemControl named "Undo"
+            undo_button = None
+            
+            # Navigate through the hierarchy: Window -> ListControl -> ListItemControl "Undo"
+            try:
+                # Search for ListItemControl with name "Undo"
+                undo_button = self.window.ListItemControl(Name="Undo", searchDepth=10)
+                if not undo_button.Exists(0, 0):
+                    undo_button = None
+            except Exception as e:
+                pass
+            
+            if undo_button:
+                rect = undo_button.BoundingRectangle
+                
+                # Calculate dimensions with scaling (no padding for perfect fit)
+                padding = 0
+                width = (rect.right - rect.left - 2*padding) / SCALE_FACTOR
+                height = (rect.bottom - rect.top - 2*padding) / SCALE_FACTOR
+                
+                # Dynamic Gap based on window size
+                win_rect = self.window.BoundingRectangle
+                win_width = win_rect.right - win_rect.left
+                scale_ratio = win_width / 1920.0
+                scale_ratio = max(0.5, min(2.0, scale_ratio))
+                GAP = max(3, int(5 * scale_ratio))
+                undo_border_width = max(1, int(3 * scale_ratio))
+                
+                # Update undo box position and size
+                self.undo_box.left = (rect.left + padding) / SCALE_FACTOR
+                self.undo_box.top = (rect.top + padding) / SCALE_FACTOR
+                self.undo_box.width = width
+                self.undo_box.height = height
+                self.undo_box.border = ft.Border.all(undo_border_width, ft.Colors.RED)
+                self.undo_box.opacity = 1
+                
+                # Update undo box outer
+                self.undo_box_outer.left = self.undo_box.left - GAP
+                self.undo_box_outer.top = self.undo_box.top - GAP
+                self.undo_box_outer.width = self.undo_box.width + 2*GAP
+                self.undo_box_outer.height = self.undo_box.height + 2*GAP
+                self.undo_box_outer.opacity = 1
+            else:
+                # Hide if not found (only print once)
+                if self.undo_box.opacity != 0:
+                    print("Undo button not found - hiding overlay")
+                self.undo_box.opacity = 0
+                self.undo_box_outer.opacity = 0
+        except Exception as e:
+            # Hide on error
+            print(f"Error finding undo button: {e}")
+            self.undo_box.opacity = 0
+            self.undo_box_outer.opacity = 0
+
     async def update_overlay(self):
+        # Update undo button overlay every frame
+        self.update_undo_button_overlay()
+        
         # 1. Check Window State
         # Use cached window control
         try:
