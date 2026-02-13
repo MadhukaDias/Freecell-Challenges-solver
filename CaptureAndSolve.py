@@ -311,6 +311,10 @@ def main():
     
     if state:
         encoded_string = generate_encoded_string(state)
+        
+        # Remove any backticks (PowerShell escape characters) that might have gotten into the string
+        encoded_string = encoded_string.replace('`', '')
+        
         print(f"\nCaptured State:")
         print(encoded_string)
         
