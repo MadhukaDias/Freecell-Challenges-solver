@@ -664,12 +664,14 @@ string CaptureAutoMoves(Node& node) {
 #include <tuple>
 #include <iomanip>
 
+extern struct Options options;
+
+// --- START OF FIXED AStarSolver ---
+
 class AStarSolver {
 public:
     string Solve(const Node& layout, string challenge_code) {
         if (challenge_code == "00") return "";
-        
-        cout << "DEBUG: AStarSolver::Solve invoked for Challenge: " << challenge_code << endl;
         
         // 1. Parse Targets
         vector<Card> all_potential_targets = ParseTargets(challenge_code);
@@ -678,101 +680,128 @@ public:
             return "";
         }
         
-        // 2. Setup A*
+        // 2. Setup Optimized A* Memory
         Pool pool; 
-        // Use hash for closed set to save memory (size_t is 4 or 8 bytes vs string 100+ bytes)
-        std::unordered_set<size_t> closed_set;
+        // Use the large Hash Table from existing codebase (2^21 buckets ≈ 2 million)
+        // This is much faster than std::unordered_set
+        std::unique_ptr<HashTable> closed_set(new HashTable(2097152));
+        
+        // Priority Queue for Open Set
         std::priority_queue<State, vector<State>, CompareState> open_set;
         
-        Node* root = pool.New(layout);
-        int h = CalculateHeuristic(root, all_potential_targets);
-        
-        open_set.push(State(root, 0, h, 0));
-        size_t root_hash = std::hash<string>{}(SerializeState(root));
-        closed_set.insert(root_hash);
-        
-        int nodes_expanded = 0;
-        int id_counter = 0;
-
         // Determine target count needed
         int required_count = all_potential_targets.size();
         if (isdigit(challenge_code[1])) {
             required_count = challenge_code[1] - '0';
         }
 
+        Node* root = pool.New(layout);
+        root->ComputeHash();
+        
+        // 0. Check Root Solution (Edge case)
+        if (CheckExplicitGoals(root, all_potential_targets, required_count)) {
+             cout << "Solution Found at Start!" << endl;
+             return "";
+        }
+
+        // Weighted Heuristic for Sorting (Greedy Search)
+        int h = CalculateWeightedHeuristic(root, all_potential_targets);
+        
+        open_set.push(State(root, 0, h, 0));
+        closed_set->Add(root);
+        
+        int nodes_expanded = 0;
+        int id_counter = 0;
+
         while (!open_set.empty()) {
             State current = open_set.top();
             open_set.pop();
             
             Node* node = current.GetNode();
-
-            // 3. Check Goal
-            int met_count = 0;
-            if (all_potential_targets.size() == 4 && required_count < 4) {
-                 for(const auto& t : all_potential_targets) {
-                     if (node->GetFoundation(t.suit()).Has(t)) met_count++;
-                 }
-            } else {
-                 met_count = 0;
-                 for(const auto& t : all_potential_targets) {
-                     if (node->GetFoundation(t.suit()).Has(t)) met_count++;
-                 }
-                 if (met_count == all_potential_targets.size()) met_count = required_count; 
-                 else met_count = 0; 
-            }
-
-            if (met_count >= required_count) {
-                 cout << "A* Solution Found! Nodes expanded: " << nodes_expanded << endl;
-                 cout << "Solution Length: " << node->moves_performed() << endl;
-                 
-                 string code;
-                 {
-                     // Reconstruct path
-                     ScopedNode temp_node(&pool, pool.New(layout));
-                     Node::CompressedMoves::Reader reader(node->moves());
-                     for (int i = 0; i < node->moves_performed(); ++i) {
-                        auto new_nodes = temp_node->Expand(&pool).ToVector();
-                        int move_index = reader.Read(new_nodes.size());
-                        auto picked_node = new_nodes[move_index];
-                        for (auto* n : new_nodes) if (n != picked_node) pool.Delete(n);
-                        temp_node.reset(picked_node);
-                        code += temp_node->last_move().Encode();
-                     }
-                 }
-                 return code;
-            }
             
             // 4. Expand
             nodes_expanded++;
-            if (nodes_expanded % 100000 == 0) cout << "Expanded: " << nodes_expanded << " f=" << current.f() << " g=" << current.GetG() << endl;
+            // Log progress
+            if (!options.quiet && nodes_expanded % 50000 == 0) {
+                 cout << "A* Expanded: " << nodes_expanded << " Depth: " << current.GetG() 
+                      << " H: " << current.GetH() << endl;
+            }
             
+            // Safety break for unlimited searches to prevent crash
+            if (options.move_limit == 0 && nodes_expanded > 5000000) {
+                if (!options.quiet) cout << "Aborting: Too many nodes expanded." << endl;
+                return "";
+            }
+
             auto children = node->Expand(&pool);
             for (Node* child : children) {
-                // Optimize: Hash state immediately
-                string child_str = SerializeState(child);
-                size_t child_hash = std::hash<string>{}(child_str);
+                int new_g = current.GetG() + 1;
+                
+                // --- 1. Hard Move Limit Check ---
+                // If we've exceeded the limit, delete immediately.
+                if (options.move_limit > 0 && new_g > options.move_limit) {
+                    pool.Delete(child);
+                    continue;
+                }
 
-                if (closed_set.find(child_hash) == closed_set.end()) {
-                    closed_set.insert(child_hash);
+                // --- 2. Greedy Goal Check ---
+                // Check goal immediately on generation.
+                // Requirement #3 & #4: First found solution is acceptable.
+                if (CheckExplicitGoals(child, all_potential_targets, required_count)) {
+                     if (!options.quiet) {
+                         cout << "A* Solution Found! Nodes expanded: " << nodes_expanded << endl;
+                         cout << "Solution Length: " << new_g << endl;
+                     }
+                     
+                     string code;
+                     {
+                         // Reconstruct path
+                         ScopedNode temp_node(&pool, pool.New(layout));
+                         Node::CompressedMoves::Reader reader(child->moves());
+                         for (int i = 0; i < new_g; ++i) {
+                            auto new_nodes = temp_node->Expand(&pool).ToVector();
+                            int move_index = reader.Read(new_nodes.size());
+                            auto picked_node = new_nodes[move_index];
+                            for (auto* n : new_nodes) if (n != picked_node) pool.Delete(n);
+                            temp_node.reset(picked_node);
+                            code += temp_node->last_move().Encode();
+                         }
+                     }
+                     return code;
+                }
+
+                // Compute Zobrist Hash (Fast)
+                child->ComputeHash();
+                
+                // Check if visited using the HashTable
+                if (!closed_set->Find(child)) {
                     
-                    int child_h = 0;
-                    if (all_potential_targets.size() == 4 && required_count < 4) {
-                         vector<int> costs;
-                         for(const auto& t : all_potential_targets) costs.push_back(GetRecursiveHeuristic(child, t));
-                         std::sort(costs.begin(), costs.end());
-                         for(int i=0; i<required_count; ++i) child_h += costs[i];
-                    } else {
-                         child_h = CalculateHeuristic(child, all_potential_targets);
+                    // --- 3. Predictive Pruning ---
+                    // Calculate "Admissible" (Minimum Mathematical) Heuristic
+                    int pruning_h = 0;
+                    if (options.move_limit > 0) {
+                        pruning_h = CalculateAdmissibleHeuristic(child, all_potential_targets, required_count);
+                        // If (Moves Taken + Min Moves Left) > Limit, give up.
+                        if ((new_g + pruning_h) > options.move_limit) {
+                            pool.Delete(child);
+                            continue;
+                        }
                     }
 
-                    open_set.push(State(child, current.GetG() + 1, child_h, ++id_counter));
+                    // --- 4. Weighted Sorting ---
+                    // Calculate "Weighted" (Greedy) Heuristic for the Priority Queue
+                    int sorting_h = CalculateWeightedHeuristic(child, all_potential_targets);
+
+                    closed_set->Add(child);
+                    open_set.push(State(child, new_g, sorting_h, ++id_counter));
                 } else {
+                    // Duplicate state, discard
                     pool.Delete(child);
                 }
             }
         }
 
-        cout << "A* Search failed to find a solution." << endl;
+        if (!options.quiet) cout << "A* Search failed to find a solution." << endl;
         return "";
     }
 
@@ -782,8 +811,13 @@ private:
         State(Node* n, int g_val, int h_val, int id_val) 
             : node_(n), g_(g_val), h_(h_val), id_(id_val) {}
 
+        // F = g + h. 
+        // Note: For pure Greedy Best-First, we would only use h.
+        // For A*, we use g + h.
+        // We use A* here but h is heavily weighted in the calculation.
         int f() const { return g_ + h_; }
         int GetG() const { return g_; }
+        int GetH() const { return h_; }
         Node* GetNode() const { return node_; }
         int GetId() const { return id_; }
 
@@ -801,80 +835,113 @@ private:
         }
     };
 
-    // Serialize state for Closed Set
-    string SerializeState(const Node* node) {
-        string s = "";
-        // Foundations (only top matters)
-        for(int i=0; i<4; ++i) {
-            if (node->GetFoundation(i).empty()) s += "00";
-            else s += node->GetFoundation(i).Top(i).ToCleanString();
+    bool CheckExplicitGoals(const Node* node, const vector<Card>& targets, int required_count) {
+        int met_count = 0;
+        if (targets.size() == 4 && required_count < 4) {
+             // "Matches any X of 4 suits"
+             for(const auto& t : targets) {
+                 if (node->GetFoundation(t.suit()).Has(t)) met_count++;
+             }
+        } else {
+             // Specific cards required
+             for(const auto& t : targets) {
+                 if (node->GetFoundation(t.suit()).Has(t)) met_count++;
+             }
+             if (met_count == targets.size()) met_count = required_count; 
+             else met_count = 0; 
         }
-        // Reserve 
-        vector<string> reserve_strs;
-        const auto& current_reserve = node->GetReserve();
-        for(int i=0; i<current_reserve.size(); ++i) {
-            reserve_strs.push_back(current_reserve[i].ToCleanString());
-        }
-        std::sort(reserve_strs.begin(), reserve_strs.end());
-        for(const auto& rs : reserve_strs) s += rs;
-
-        // Tableau
-        for(int i=0; i<8; ++i) {
-            s += "|";
-            const auto& t = node->GetTableau(i);
-            for(int j=0; j<t.size(); ++j) {
-                s += t.card(j).ToCleanString();
-            }
-        }
-        return s;
+        return met_count >= required_count;
     }
 
-    // Calculate Depth of a card in the layout
+    // Returns the depth of a card (how many cards are covering it)
     int GetCardDepth(const Node* node, Card target) {
-        // Check Reserve
+        // 1. Already in Foundation?
+        if (node->GetFoundation(target.suit()).Has(target)) return -1;
+        
+        // 2. Accessible in Reserve? 
         const auto& current_reserve = node->GetReserve();
         for(int i=0; i<current_reserve.size(); ++i) {
-            if (current_reserve[i] == target) return 0; // Accessible
+            if (current_reserve[i] == target) return 0; 
         }
         
-        // Check Tableau
+        // 3. Buried in Tableau?
         for(int i=0; i<8; ++i) {
             const auto& t = node->GetTableau(i);
             for(int j=0; j<t.size(); ++j) {
                 if (t.card(j) == target) {
+                    // Return number of cards sitting ON TOP of the target
                     return t.size() - 1 - j;
                 }
             }
         }
         
-        if (node->GetFoundation(target.suit()).Has(target)) return -1; // Done
-
-        return 1000;
+        // Not found / Not accessible
+        return 100;
     }
 
-    int GetRecursiveHeuristic(const Node* node, Card target, int depth_limit = 13) {
+    // Multiplier: 1 for Admissible (Pruning), 2+ for Weighted (Digging)
+    int GetRecursiveHeuristic(const Node* node, Card target, int depth_multiplier, int depth_limit = 13) {
         if (depth_limit <= 0) return 0; 
         
         if (node->GetFoundation(target.suit()).Has(target)) return 0;
 
         int current_depth = GetCardDepth(node, target);
-        if (current_depth == -1) return 0; // Already in foundation
+        if (current_depth == -1) return 0; 
 
-        int cost = current_depth;
+        // Apply multiplier to prioritize digging
+        int cost = current_depth * depth_multiplier;
         
+        // Recursive step: Cost of prerequisites
         if (target.rank() > ACE) {
             Card prereq(target.suit(), target.rank() - 1);
-            cost += GetRecursiveHeuristic(node, prereq, depth_limit - 1);
+            cost += GetRecursiveHeuristic(node, prereq, depth_multiplier, depth_limit - 1);
         }
-        
         return cost;
     }
 
-    int CalculateHeuristic(const Node* node, const vector<Card>& targets) {
-        int total_h = 0;
+    // 1. ADMISSIBLE HEURISTIC (Optimistic)
+    // Used specifically for checking against Move Limit
+    int CalculateAdmissibleHeuristic(const Node* node, const vector<Card>& targets, int required_count) {
+        vector<int> costs;
         for(const auto& t : targets) {
-            total_h += GetRecursiveHeuristic(node, t);
+            costs.push_back(GetRecursiveHeuristic(node, t, 1)); // Multiplier 1
         }
+        
+        if (costs.empty()) return 0;
+
+        // If we only need X out of Y targets, take the X smallest costs
+        std::sort(costs.begin(), costs.end());
+        int h = 0;
+        int count = (required_count < costs.size()) ? required_count : costs.size();
+        for(int i=0; i<count; ++i) h += costs[i];
+        
+        return h;
+    }
+
+    // 2. WEIGHTED HEURISTIC (Greedy/Smart)
+    // Used for sorting the Priority Queue
+    int CalculateWeightedHeuristic(const Node* node, const vector<Card>& targets) {
+        int total_h = 0;
+        
+        // A. Target Costs (Weighted x2 to prefer drilling)
+        // We sum all targets here to encourage general progress
+        for(const auto& t : targets) {
+            total_h += GetRecursiveHeuristic(node, t, 2); 
+        }
+
+        // B. Clutter Penalty (VITAL for limited capacity)
+        // If the board is clogged (low mobile slots), add a penalty.
+        int empty_reserve_slots = 4 - node->GetReserve().size();
+        int empty_tableau_cols = 0;
+        for(int i=0; i<8; ++i) {
+            if (node->GetTableau(i).size() == 0) empty_tableau_cols++;
+        }
+        int mobile_slots = empty_reserve_slots + empty_tableau_cols;
+
+        if (mobile_slots == 0) total_h += 15;
+        else if (mobile_slots == 1) total_h += 8;
+        else if (mobile_slots == 2) total_h += 3;
+
         return total_h;
     }
 
@@ -891,8 +958,8 @@ private:
                 if (val >= 1 && val <= 9) rank = val - 1;
             } else {
                 char lower_r = tolower(rank_char);
-                if (lower_r == 'a') rank = 0; // Just in case 'a' is used for Ace
-                else if (lower_r == 't') rank = 9; // Ten
+                if (lower_r == 'a') rank = 0; 
+                else if (lower_r == 't') rank = 9; 
                 else if (lower_r == 'j') rank = 10;
                 else if (lower_r == 'q') rank = 11;
                 else if (lower_r == 'k') rank = 12;
@@ -921,6 +988,7 @@ string SolveByAStar(const Node& layout) {
     AStarSolver solver;
     return solver.Solve(layout, options.challenge_code);
 }
+// --- END OF FIXED AStarSolver ---
 
 int main(int argc, char** argv) {
   // Hardcoded options for the sample
@@ -1297,7 +1365,7 @@ int main(int argc, char** argv) {
       
       ofstream outfile(filename);
       if (outfile.is_open()) {
-          outfile << deck_encoded_str << endl;
+          outfile << argv[1] << endl;
           outfile << encoded_solution_string << endl;
           cout << "Saved encoded solution to " << filename << "\n\n";
       } else {

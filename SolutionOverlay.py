@@ -108,7 +108,7 @@ class SolutionOverlay:
         # Create controls for Source and Dest
         # No animations for faster overlay
         self.src_box_outer = ft.Container(
-            border=ft.Border.all(2, ft.Colors.ORANGE),
+            border=ft.Border.all(5, ft.Colors.BLUE_400),
             border_radius=6,
             opacity=0,
             width=0, height=0,
@@ -116,15 +116,15 @@ class SolutionOverlay:
         )
 
         self.src_box = ft.Container(
-            border=ft.Border.all(3, ft.Colors.AMBER),
+            border=ft.Border.all(3, ft.Colors.BLUE),
             border_radius=6,
             opacity=0,
             width=0, height=0,
             left=0, top=0,
             shadow=ft.BoxShadow(
                 spread_radius=0,
-                blur_radius=15,
-                color=ft.Colors.AMBER,
+                blur_radius=6,
+                color=ft.Colors.BLUE,
                 blur_style=ft.BlurStyle.OUTER,
             )
         )
@@ -141,11 +141,19 @@ class SolutionOverlay:
             opacity=0,
             border_radius=6,
             shadow=ft.BoxShadow(
-                spread_radius=-6,
-                blur_radius=15,
-                color=ft.Colors.AMBER,
+                spread_radius=0,
+                blur_radius=6,
+                color=ft.Colors.BLUE,
                 blur_style=ft.BlurStyle.OUTER,
             )
+        )
+
+        self.dest_box_outer = ft.Container(
+            border=ft.Border.all(5, ft.Colors.BLUE_400),
+            border_radius=6,
+            opacity=0,
+            width=0, height=0,
+            left=0, top=0,
         )
         
         # Undo button overlay
@@ -158,7 +166,7 @@ class SolutionOverlay:
         )
 
         self.undo_box = ft.Container(
-            border=ft.Border.all(3, ft.Colors.RED),
+            border=ft.Border.all(5, ft.Colors.RED_300),
             border_radius=6,
             opacity=0,
             width=0, height=0,
@@ -166,12 +174,12 @@ class SolutionOverlay:
             shadow=ft.BoxShadow(
                 spread_radius=0,
                 blur_radius=25,
-                color=ft.Colors.RED,
+                color=ft.Colors.RED_400,
                 blur_style=ft.BlurStyle.OUTER,
             )
         )
         
-        self.stack = ft.Stack([self.dest_box, self.src_box, self.src_box_outer, self.undo_box, self.undo_box_outer], expand=True)
+        self.stack = ft.Stack([self.dest_box, self.dest_box_outer, self.src_box, self.src_box_outer, self.undo_box, self.undo_box_outer], expand=True)
         page.add(self.stack)
         
         # Start the update loop
@@ -649,7 +657,7 @@ class SolutionOverlay:
             scale_ratio = max(0.5, min(2.0, scale_ratio))
             
             src_border_width = max(1, int(3 * scale_ratio))
-            dest_stroke_width = max(1, int(4 * scale_ratio))
+            dest_stroke_width = src_border_width*2 # Same width
             
             # Dynamic Gap
             GAP = max(3, int(5 * scale_ratio))
@@ -707,6 +715,7 @@ class SolutionOverlay:
                     self.src_box.opacity = 0
                     self.src_box_outer.opacity = 0
                     self.dest_box.opacity = 0
+                    self.dest_box_outer.opacity = 0
                     self.page.update() # Brief pause to show completion before next step
                     continue
 
@@ -724,15 +733,15 @@ class SolutionOverlay:
                     self.src_box.top = (src_rect.top + padding) / SCALE_FACTOR
                     self.src_box.width = s_width
                     self.src_box.height = s_height
-                    self.src_box.border = ft.Border.all(src_border_width, ft.Colors.AMBER)
+                    self.src_box.border = ft.Border.all(src_border_width, ft.Colors.BLUE)
                     self.src_box.opacity = 1
                     
                     # Update Outer Source Box
-                    self.src_box_outer.left = self.src_box.left - GAP
-                    self.src_box_outer.top = self.src_box.top - GAP
-                    self.src_box_outer.width = self.src_box.width + 2*GAP
-                    self.src_box_outer.height = self.src_box.height + 2*GAP
-                    self.src_box_outer.opacity = 1
+                    self.src_box_outer.left = self.src_box.left - 1.5*GAP
+                    self.src_box_outer.top = self.src_box.top - 1.5*GAP
+                    self.src_box_outer.width = self.src_box.width + 3*GAP
+                    self.src_box_outer.height = self.src_box.height + 3*GAP
+                    self.src_box_outer.opacity = 0.9
                 
                 # Update Dest Box
                 if dest_rect:
@@ -741,42 +750,39 @@ class SolutionOverlay:
                     
                     if d_width < MIN_SIZE_THRESHOLD or d_height < MIN_SIZE_THRESHOLD:
                         self.dest_box.opacity = 0
+                        self.dest_box_outer.opacity = 0
                     else:
-                        # Adjust dest_box to include the outer gap so Canvas covers both rects
-                        self.dest_box.left = ((dest_rect.left + padding) / SCALE_FACTOR) - GAP
-                        self.dest_box.top = ((dest_rect.top + padding) / SCALE_FACTOR) - GAP
-                        self.dest_box.width = d_width + 2*GAP
-                        self.dest_box.height = d_height + 2*GAP
+                        # Inner Box (Dotted)
+                        self.dest_box.left = (dest_rect.left + padding) / SCALE_FACTOR
+                        self.dest_box.top = (dest_rect.top + padding) / SCALE_FACTOR
+                        self.dest_box.width = d_width
+                        self.dest_box.height = d_height
                         self.dest_box.opacity = 1
                         
-                        # Draw Dotted Rect on Canvas
+                        # Outer Box (Solid) - Match src_box_outer logic
+                        self.dest_box_outer.left = self.dest_box.left - 1.5*GAP
+                        self.dest_box_outer.top = self.dest_box.top - 1.5*GAP
+                        self.dest_box_outer.width = self.dest_box.width + 3*GAP
+                        self.dest_box_outer.height = self.dest_box.height + 3*GAP
+                        self.dest_box_outer.opacity = 0.9
+                        
+                        # Draw Dotted Rect on Canvas (Only Inner)
                         self.dest_cv.shapes = [
-                            # Inner Rect (offset by GAP)
                             cv.Rect(
-                                GAP, GAP, 
+                                0, 0, 
                                 d_width, d_height, 
                                 border_radius=6,
                                 paint=ft.Paint(
                                     style=ft.PaintingStyle.STROKE,
                                     stroke_width=dest_stroke_width,
-                                    color=ft.Colors.AMBER,
+                                    color=ft.Colors.BLUE,
                                     stroke_dash_pattern=[10, 10]
-                                )
-                            ),
-                            # Outer Rect (at 0,0 covering full box)
-                            cv.Rect(
-                                0, 0, 
-                                self.dest_box.width, self.dest_box.height, 
-                                border_radius=6,
-                                paint=ft.Paint(
-                                    style=ft.PaintingStyle.STROKE,
-                                    stroke_width=dest_stroke_width,
-                                    color=ft.Colors.ORANGE
                                 )
                             )
                         ]
                 else:
                     self.dest_box.opacity = 0
+                    self.dest_box_outer.opacity = 0
                 
                 self.page.update()
                 # No fade in delay needed
